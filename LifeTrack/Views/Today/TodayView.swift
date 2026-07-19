@@ -11,6 +11,8 @@ struct TodayView: View {
     @State private var manualActivity: ActivityType?
     @State private var showActivityPicker = false
     @State private var showAmapUnavailable = false
+    @State private var showTodayTrackDetail = false
+    @State private var pendingPlaceFromCurrentLocation = false
     @State private var mapCameraRequest: MapCameraRequest?
 
     private var todaySessions: [ActivitySession] {
@@ -72,11 +74,24 @@ struct TodayView: View {
             } message: {
                 Text("安装高德地图后可开始导航。LifeTrack 会独立保存本地轨迹。")
             }
+            .navigationDestination(isPresented: $showTodayTrackDetail) {
+                TodayTrackDetailView(sessions: todaySessions,
+                                     places: places,
+                                     currentLocation: locationService.currentLocation,
+                                     onLongPress: { coordinate in
+                                         placeDraft = PlaceDraft(coordinate: coordinate)
+                                     })
+            }
+            .onChange(of: locationService.currentLocation) { _, location in
+                guard pendingPlaceFromCurrentLocation, let coordinate = location?.coordinate else { return }
+                pendingPlaceFromCurrentLocation = false
+                placeDraft = PlaceDraft(coordinate: coordinate)
+            }
         }
     }
 
     private var todayMap: some View {
-        ZStack(alignment: .topTrailing) {
+        ZStack {
             TrackMapView(points: todayMapPoints,
                          places: places,
                          currentLocation: locationService.currentLocation,
@@ -85,25 +100,22 @@ struct TodayView: View {
             }
             .frame(height: 220)
             .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(alignment: .topTrailing) {
+                MapControlsPanel {
+                    MapControlButton(symbol: "location.fill", title: "定位到当前位置") {
+                        focusCurrentLocation()
+                    }
 
-            VStack(spacing: 8) {
-                MapControlButton(symbol: "location.fill", title: "定位到当前位置") {
-                    locationService.requestCurrentLocation()
-                    mapCameraRequest = MapCameraRequest(target: .currentLocation)
-                }
+                    MapControlButton(symbol: "point.3.connected.trianglepath.dotted", title: "显示完整轨迹") {
+                        showFullTrack()
+                    }
 
-                MapControlButton(symbol: "point.3.connected.trianglepath.dotted", title: "显示完整轨迹") {
-                    mapCameraRequest = MapCameraRequest(target: .route)
+                    MapControlButton(symbol: "mappin.badge.plus", title: "标记当前位置") {
+                        markCurrentLocation()
+                    }
                 }
-                .disabled(todayPoints.isEmpty)
-
-                MapControlButton(symbol: "mappin.badge.plus", title: "标记当前位置") {
-                    guard let coordinate = locationService.currentLocation?.coordinate else { return }
-                    placeDraft = PlaceDraft(coordinate: coordinate)
-                }
-                .disabled(locationService.currentLocation == nil)
+                .padding(10)
             }
-            .padding(10)
         }
         .padding(.horizontal)
     }
@@ -214,6 +226,29 @@ struct TodayView: View {
     private func selectActivity(_ activity: ActivityType?) {
         manualActivity = activity
         locationService.setManualActivity(activity)
+    }
+
+    private func focusCurrentLocation() {
+        locationService.requestCurrentLocation()
+        mapCameraRequest = MapCameraRequest(target: .currentLocation)
+    }
+
+    private func showFullTrack() {
+        if todayPoints.isEmpty {
+            showTodayTrackDetail = true
+        } else {
+            mapCameraRequest = MapCameraRequest(target: .route)
+        }
+    }
+
+    private func markCurrentLocation() {
+        if let coordinate = locationService.currentLocation?.coordinate {
+            placeDraft = PlaceDraft(coordinate: coordinate)
+        } else {
+            pendingPlaceFromCurrentLocation = true
+            locationService.requestCurrentLocation()
+            mapCameraRequest = MapCameraRequest(target: .currentLocation)
+        }
     }
 
     private func openAMapNavigation(to coordinate: CLLocationCoordinate2D, name: String) {
@@ -348,20 +383,25 @@ private struct TodayTrackDetailView: View {
                 .padding(12)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
 
-            VStack(spacing: 8) {
-                MapControlButton(symbol: "location.fill", title: "定位到当前位置") {
-                    mapCameraRequest = MapCameraRequest(target: .currentLocation)
-                }
-                .disabled(currentLocation == nil)
-
-                MapControlButton(symbol: "point.3.connected.trianglepath.dotted", title: "显示完整轨迹") {
-                    mapCameraRequest = MapCameraRequest(target: .route)
-                }
-            }
+            vividMapControls
             .padding(12)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         }
         .padding(.horizontal)
+    }
+
+    private var vividMapControls: some View {
+        MapControlsPanel {
+            MapControlButton(symbol: "location.fill", title: "定位到当前位置") {
+                if currentLocation != nil {
+                    mapCameraRequest = MapCameraRequest(target: .currentLocation)
+                }
+            }
+
+            MapControlButton(symbol: "point.3.connected.trianglepath.dotted", title: "显示完整轨迹") {
+                mapCameraRequest = MapCameraRequest(target: .route)
+            }
+        }
     }
 
     private var sessionList: some View {
@@ -451,10 +491,32 @@ private struct MapControlButton: View {
                     Circle().stroke(.white.opacity(0.28), lineWidth: 1)
                 }
                 .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
-                .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .frame(width: 52, height: 52)
+        .contentShape(Rectangle())
         .accessibilityLabel(title)
+    }
+}
+
+private struct MapControlsPanel<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            content
+        }
+        .padding(4)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay {
+            Capsule().stroke(.white.opacity(0.24), lineWidth: 1)
+        }
+        .contentShape(Rectangle())
+        .allowsHitTesting(true)
     }
 }
 

@@ -264,12 +264,13 @@ struct TrackMapPoint {
 enum TrackMapPointSource {
     case recorded
     case sample
+    case photo
 }
 
 private extension TrackMapPoint {
     var isReliable: Bool {
         switch source {
-        case .sample:
+        case .sample, .photo:
             return true
         case .recorded:
             return horizontalAccuracy >= 0 && horizontalAccuracy <= 100
@@ -354,6 +355,20 @@ private struct TrackDisplaySegment: Identifiable {
 
             let effectiveInterval = max(interval, 1)
             let averageSpeed = distance / effectiveInterval
+            if current.source == .photo {
+                segments.append(TrackDisplaySegment(id: nextID,
+                                                    activityType: current.activityType,
+                                                    source: current.source,
+                                                    coordinates: [previous.coordinate, current.coordinate],
+                                                    startTimestamp: previous.timestamp,
+                                                    endTimestamp: current.timestamp,
+                                                    distance: distance,
+                                                    averageSpeed: averageSpeed))
+                nextID += 1
+                previousPoint = current
+                continue
+            }
+
             guard distance <= Self.maximumDistance(for: current.activityType),
                   averageSpeed <= Self.maximumSpeed(for: current.activityType) else {
                 previousPoint = current
