@@ -531,46 +531,56 @@ private final class TrackGlowRenderer: MKOverlayRenderer {
             let mapPoint = MKMapPoint(point.coordinate)
             guard visible.contains(mapPoint) else { continue }
             let screenPoint = self.point(for: mapPoint)
-            let pulse = CGFloat((index % 7)) * style.pulse
+            let pulse = CGFloat((index % 5)) * style.pulse
             let radius = style.radius + pulse
             let color = overlay.presentation == .photoDots ? style.color : UIColor(point.activityType.trackColor)
-            drawGlowDot(at: screenPoint, radius: radius, color: color, alphaScale: style.alphaScale, in: context)
+            drawGlowDot(at: screenPoint,
+                        radius: radius,
+                        color: color,
+                        alphaScale: style.alphaScale,
+                        outerScale: style.outerScale,
+                        middleScale: style.middleScale,
+                        coreScale: style.coreScale,
+                        in: context)
         }
 
         context.restoreGState()
     }
 
-    private func glowStyle(for presentation: TrackGlowOverlay.Presentation, zoomScale: MKZoomScale) -> (radius: CGFloat, pulse: CGFloat, alphaScale: CGFloat, color: UIColor) {
+    private func glowStyle(for presentation: TrackGlowOverlay.Presentation, zoomScale: MKZoomScale) -> (radius: CGFloat, pulse: CGFloat, alphaScale: CGFloat, outerScale: CGFloat, middleScale: CGFloat, coreScale: CGFloat, color: UIColor) {
         switch presentation {
         case .track:
-            return (max(1.4, min(3.4, 3.2 / sqrt(zoomScale))), 0.18, 1, .systemBlue)
+            return (max(1.4, min(3.4, 3.2 / sqrt(zoomScale))), 0.18, 1, 3.6, 1.7, 0.55, .systemBlue)
         case .photoDots:
             let scale = max(CGFloat(zoomScale), 0.0001)
-            let radius = max(2.4, min(11.5, 7.8 / pow(scale, 0.22)))
-            let alpha = max(0.92, min(1.55, 1.35 / pow(scale, 0.08)))
-            return (radius, 0.34, alpha, UIColor(red: 0.58, green: 0.84, blue: 1.0, alpha: 1))
+            let zoomOutBoost = max(0, min(1, (1 / sqrt(scale) - 0.65) / 1.65))
+            let radius = 1.05 + zoomOutBoost * 1.05
+            let outerScale = 3.8 + zoomOutBoost * 2.4
+            let middleScale = 1.45 + zoomOutBoost * 0.55
+            let alpha = 1.0 + zoomOutBoost * 0.24
+            return (radius, 0.08, alpha, outerScale, middleScale, 0.42, UIColor(red: 0.39, green: 0.96, blue: 0.80, alpha: 1))
         }
     }
 
-    private func drawGlowDot(at point: CGPoint, radius: CGFloat, color: UIColor, alphaScale: CGFloat, in context: CGContext) {
-        let outerRect = CGRect(x: point.x - radius * 3.6,
-                               y: point.y - radius * 3.6,
-                               width: radius * 7.2,
-                               height: radius * 7.2)
-        context.setFillColor(color.withAlphaComponent(min(0.28, 0.18 * alphaScale)).cgColor)
+    private func drawGlowDot(at point: CGPoint, radius: CGFloat, color: UIColor, alphaScale: CGFloat, outerScale: CGFloat, middleScale: CGFloat, coreScale: CGFloat, in context: CGContext) {
+        let outerRect = CGRect(x: point.x - radius * outerScale,
+                               y: point.y - radius * outerScale,
+                               width: radius * outerScale * 2,
+                               height: radius * outerScale * 2)
+        context.setFillColor(color.withAlphaComponent(min(0.20, 0.10 * alphaScale)).cgColor)
         context.fillEllipse(in: outerRect)
 
-        let middleRect = CGRect(x: point.x - radius * 1.7,
-                                y: point.y - radius * 1.7,
-                                width: radius * 3.4,
-                                height: radius * 3.4)
-        context.setFillColor(color.withAlphaComponent(min(0.62, 0.42 * alphaScale)).cgColor)
+        let middleRect = CGRect(x: point.x - radius * middleScale,
+                                y: point.y - radius * middleScale,
+                                width: radius * middleScale * 2,
+                                height: radius * middleScale * 2)
+        context.setFillColor(color.withAlphaComponent(min(0.46, 0.28 * alphaScale)).cgColor)
         context.fillEllipse(in: middleRect)
 
-        let coreRect = CGRect(x: point.x - radius * 0.55,
-                              y: point.y - radius * 0.55,
-                              width: radius * 1.1,
-                              height: radius * 1.1)
+        let coreRect = CGRect(x: point.x - radius * coreScale,
+                              y: point.y - radius * coreScale,
+                              width: radius * coreScale * 2,
+                              height: radius * coreScale * 2)
         context.setFillColor(color.withAlphaComponent(min(1.0, 0.95 * alphaScale)).cgColor)
         context.fillEllipse(in: coreRect)
     }
