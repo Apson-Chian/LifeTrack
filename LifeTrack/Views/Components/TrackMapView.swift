@@ -527,6 +527,12 @@ private final class TrackGlowRenderer: MKOverlayRenderer {
         context.saveGState()
         context.setBlendMode(.plusLighter)
 
+        if overlay.presentation == .photoDots {
+            drawPhotoDots(overlay.points, visible: visible, zoomScale: zoomScale, in: context)
+            context.restoreGState()
+            return
+        }
+
         for (index, point) in overlay.points.enumerated() {
             let mapPoint = MKMapPoint(point.coordinate)
             guard visible.contains(mapPoint) else { continue }
@@ -545,6 +551,56 @@ private final class TrackGlowRenderer: MKOverlayRenderer {
         }
 
         context.restoreGState()
+    }
+
+    private func drawPhotoDots(_ points: [TrackMapPoint], visible: MKMapRect, zoomScale: MKZoomScale, in context: CGContext) {
+        let scale = max(CGFloat(zoomScale), 0.0001)
+        let zoomOut = max(0, min(1, (1 / sqrt(scale) - 0.62) / 1.8))
+        let shouldCluster = zoomOut > 0.16
+
+        if shouldCluster {
+            let cellSize = 18 + zoomOut * 18
+            var buckets: [PhotoDotBucket: PhotoDotCluster] = [:]
+
+            for point in points {
+                let mapPoint = MKMapPoint(point.coordinate)
+                guard visible.contains(mapPoint) else { continue }
+                let screenPoint = self.point(for: mapPoint)
+                let key = PhotoDotBucket(x: Int(screenPoint.x / cellSize), y: Int(screenPoint.y / cellSize))
+                buckets[key, default: PhotoDotCluster()].add(screenPoint)
+            }
+
+            for cluster in buckets.values {
+                let strength = min(CGFloat(cluster.count), 18)
+                let radius = 1.25 + zoomOut * 1.15 + log2(strength + 1) * 0.36
+                let alpha = 1.0 + min(0.44, log2(strength + 1) * 0.08)
+                drawGlowDot(at: cluster.center,
+                            radius: radius,
+                            color: UIColor(red: 0.39, green: 0.96, blue: 0.80, alpha: 1),
+                            alphaScale: alpha,
+                            outerScale: 4.8 + zoomOut * 2.6,
+                            middleScale: 1.55 + zoomOut * 0.62,
+                            coreScale: 0.36,
+                            in: context)
+            }
+            return
+        }
+
+        let style = glowStyle(for: .photoDots, zoomScale: zoomScale)
+        for (index, point) in points.enumerated() {
+            let mapPoint = MKMapPoint(point.coordinate)
+            guard visible.contains(mapPoint) else { continue }
+            let screenPoint = self.point(for: mapPoint)
+            let pulse = CGFloat((index % 5)) * style.pulse
+            drawGlowDot(at: screenPoint,
+                        radius: style.radius + pulse,
+                        color: style.color,
+                        alphaScale: style.alphaScale,
+                        outerScale: style.outerScale,
+                        middleScale: style.middleScale,
+                        coreScale: style.coreScale,
+                        in: context)
+        }
     }
 
     private func glowStyle(for presentation: TrackGlowOverlay.Presentation, zoomScale: MKZoomScale) -> (radius: CGFloat, pulse: CGFloat, alphaScale: CGFloat, outerScale: CGFloat, middleScale: CGFloat, coreScale: CGFloat, color: UIColor) {
@@ -583,6 +639,28 @@ private final class TrackGlowRenderer: MKOverlayRenderer {
                               height: radius * coreScale * 2)
         context.setFillColor(color.withAlphaComponent(min(1.0, 0.95 * alphaScale)).cgColor)
         context.fillEllipse(in: coreRect)
+    }
+}
+
+private struct PhotoDotBucket: Hashable {
+    let x: Int
+    let y: Int
+}
+
+private struct PhotoDotCluster {
+    private(set) var count = 0
+    private var sumX: CGFloat = 0
+    private var sumY: CGFloat = 0
+
+    var center: CGPoint {
+        guard count > 0 else { return .zero }
+        return CGPoint(x: sumX / CGFloat(count), y: sumY / CGFloat(count))
+    }
+
+    mutating func add(_ point: CGPoint) {
+        count += 1
+        sumX += point.x
+        sumY += point.y
     }
 }
 

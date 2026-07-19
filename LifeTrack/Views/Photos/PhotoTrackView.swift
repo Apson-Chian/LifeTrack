@@ -118,6 +118,10 @@ struct PhotoTrackView: View {
                 StatisticTile(title: "已跳过", value: "\(max(scannedPhotoCount - photoPoints.count, 0))", symbol: "photo.badge.exclamationmark")
                 StatisticTile(title: "状态", value: statusText, symbol: "checkmark.circle")
             }
+            GridRow {
+                StatisticTile(title: "地图校正", value: "国内", symbol: "scope")
+                StatisticTile(title: "显示方式", value: "聚合点", symbol: "sparkles")
+            }
         }
         .padding(.horizontal)
     }
@@ -221,7 +225,7 @@ struct PhotoTrackView: View {
         var importedPoints: [PhotoLocationPoint] = []
         assets.enumerateObjects { asset, _, _ in
             guard let location = asset.location else { return }
-            importedPoints.append(PhotoLocationPoint(coordinate: location.coordinate,
+            importedPoints.append(PhotoLocationPoint(coordinate: ChinaMapCoordinateTransform.displayCoordinate(forPhotoCoordinate: location.coordinate),
                                                      date: asset.creationDate ?? Date.distantPast))
         }
 
@@ -247,4 +251,50 @@ private struct PhotoLocationPoint: Identifiable {
     let id = UUID()
     let coordinate: CLLocationCoordinate2D
     let date: Date
+}
+
+private enum ChinaMapCoordinateTransform {
+    private static let earthRadius = 6_378_245.0
+    private static let eccentricity = 0.00669342162296594323
+
+    static func displayCoordinate(forPhotoCoordinate coordinate: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
+        guard isInMainlandChina(coordinate) else { return coordinate }
+        return wgs84ToGCJ02(coordinate)
+    }
+
+    private static func isInMainlandChina(_ coordinate: CLLocationCoordinate2D) -> Bool {
+        coordinate.longitude >= 72.004
+            && coordinate.longitude <= 137.8347
+            && coordinate.latitude >= 0.8293
+            && coordinate.latitude <= 55.8271
+    }
+
+    private static func wgs84ToGCJ02(_ coordinate: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
+        var dLat = transformLatitude(coordinate.longitude - 105.0, coordinate.latitude - 35.0)
+        var dLon = transformLongitude(coordinate.longitude - 105.0, coordinate.latitude - 35.0)
+        let radLat = coordinate.latitude / 180.0 * .pi
+        var magic = sin(radLat)
+        magic = 1 - eccentricity * magic * magic
+        let sqrtMagic = sqrt(magic)
+        dLat = (dLat * 180.0) / ((earthRadius * (1 - eccentricity)) / (magic * sqrtMagic) * .pi)
+        dLon = (dLon * 180.0) / (earthRadius / sqrtMagic * cos(radLat) * .pi)
+        return CLLocationCoordinate2D(latitude: coordinate.latitude + dLat,
+                                      longitude: coordinate.longitude + dLon)
+    }
+
+    private static func transformLatitude(_ x: Double, _ y: Double) -> Double {
+        var result = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * sqrt(abs(x))
+        result += (20.0 * sin(6.0 * x * .pi) + 20.0 * sin(2.0 * x * .pi)) * 2.0 / 3.0
+        result += (20.0 * sin(y * .pi) + 40.0 * sin(y / 3.0 * .pi)) * 2.0 / 3.0
+        result += (160.0 * sin(y / 12.0 * .pi) + 320 * sin(y * .pi / 30.0)) * 2.0 / 3.0
+        return result
+    }
+
+    private static func transformLongitude(_ x: Double, _ y: Double) -> Double {
+        var result = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * sqrt(abs(x))
+        result += (20.0 * sin(6.0 * x * .pi) + 20.0 * sin(2.0 * x * .pi)) * 2.0 / 3.0
+        result += (20.0 * sin(x * .pi) + 40.0 * sin(x / 3.0 * .pi)) * 2.0 / 3.0
+        result += (150.0 * sin(x / 12.0 * .pi) + 300.0 * sin(x / 30.0 * .pi)) * 2.0 / 3.0
+        return result
+    }
 }
