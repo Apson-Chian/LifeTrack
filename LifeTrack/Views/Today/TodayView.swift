@@ -344,6 +344,10 @@ private struct TodayTrackDetailView: View {
                                  isSample: isShowingSampleTrack)
             .padding(12)
 
+            TrackTypeLegend()
+                .padding(12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+
             VStack(spacing: 8) {
                 MapControlButton(symbol: "location.fill", title: "定位到当前位置") {
                     mapCameraRequest = MapCameraRequest(target: .currentLocation)
@@ -393,25 +397,26 @@ private struct TodayTrackDetailView: View {
     private static func sampleTrackPoints(near coordinate: CLLocationCoordinate2D?) -> [TrackMapPoint] {
         let center = coordinate ?? CLLocationCoordinate2D(latitude: 32.0415, longitude: 118.7950)
         let routes: [[(Double, Double, ActivityType)]] = [
-            [(-0.020, -0.016, .walking), (-0.017, -0.010, .walking), (-0.014, -0.006, .running), (-0.010, -0.004, .running), (-0.006, -0.001, .cycling), (-0.002, 0.002, .cycling), (0.003, 0.006, .automotive), (0.008, 0.010, .automotive)],
-            [(-0.017, 0.017, .cycling), (-0.013, 0.012, .cycling), (-0.009, 0.009, .walking), (-0.004, 0.008, .walking), (0.001, 0.009, .running), (0.005, 0.013, .running), (0.008, 0.018, .cycling)],
-            [(-0.011, -0.019, .automotive), (-0.010, -0.012, .automotive), (-0.009, -0.005, .walking), (-0.009, 0.002, .walking), (-0.008, 0.010, .running), (-0.006, 0.018, .running)],
-            [(-0.001, -0.020, .cycling), (-0.001, -0.013, .cycling), (0.000, -0.006, .walking), (0.001, 0.001, .walking), (0.002, 0.008, .running), (0.004, 0.016, .running)],
-            [(0.011, -0.018, .automotive), (0.008, -0.011, .automotive), (0.006, -0.005, .cycling), (0.005, 0.002, .cycling), (0.006, 0.009, .walking), (0.009, 0.016, .walking)],
-            [(-0.018, -0.005, .walking), (-0.012, -0.003, .walking), (-0.006, -0.002, .running), (0.001, -0.002, .running), (0.008, -0.001, .cycling), (0.015, 0.001, .cycling)],
-            [(-0.014, 0.006, .cycling), (-0.007, 0.004, .cycling), (0.000, 0.003, .walking), (0.006, 0.004, .walking), (0.013, 0.006, .running)],
-            [(-0.006, -0.011, .walking), (-0.003, -0.008, .walking), (0.001, -0.007, .running), (0.004, -0.009, .running), (0.006, -0.013, .cycling), (0.005, -0.017, .cycling)],
-            [(-0.005, 0.011, .walking), (-0.002, 0.014, .walking), (0.002, 0.014, .running), (0.005, 0.011, .running), (0.005, 0.007, .cycling), (0.001, 0.006, .cycling), (-0.003, 0.008, .walking), (-0.005, 0.011, .walking)]
+            [(-0.015, -0.012, .walking), (-0.015, -0.008, .walking), (-0.012, -0.008, .walking), (-0.012, -0.004, .walking), (-0.009, -0.004, .walking), (-0.009, 0.000, .walking), (-0.006, 0.000, .walking)],
+            [(-0.006, 0.000, .running), (-0.003, 0.000, .running), (-0.003, 0.004, .running), (0.001, 0.004, .running), (0.001, 0.008, .running), (0.005, 0.008, .running), (0.005, 0.011, .running)],
+            [(-0.017, 0.011, .cycling), (-0.013, 0.011, .cycling), (-0.013, 0.007, .cycling), (-0.008, 0.007, .cycling), (-0.008, 0.003, .cycling), (-0.004, 0.003, .cycling), (-0.004, -0.001, .cycling)],
+            [(0.009, -0.015, .automotive), (0.006, -0.015, .automotive), (0.006, -0.010, .automotive), (0.003, -0.010, .automotive), (0.003, -0.005, .automotive), (0.000, -0.005, .automotive), (0.000, 0.001, .automotive)],
+            [(-0.002, -0.013, .walking), (-0.005, -0.013, .walking), (-0.005, -0.009, .walking), (-0.007, -0.009, .walking), (-0.007, -0.005, .walking), (-0.010, -0.005, .walking)],
+            [(0.011, 0.012, .cycling), (0.008, 0.012, .cycling), (0.008, 0.008, .cycling), (0.004, 0.008, .cycling), (0.004, 0.004, .cycling), (0.000, 0.004, .cycling)],
+            [(-0.010, 0.014, .running), (-0.006, 0.014, .running), (-0.006, 0.010, .running), (-0.002, 0.010, .running), (-0.002, 0.006, .running), (0.002, 0.006, .running)],
+            [(0.012, -0.006, .automotive), (0.009, -0.006, .automotive), (0.009, -0.002, .automotive), (0.006, -0.002, .automotive), (0.006, 0.002, .automotive), (0.003, 0.002, .automotive)],
+            [(-0.004, 0.014, .walking), (-0.001, 0.014, .walking), (-0.001, 0.011, .walking), (0.002, 0.011, .walking), (0.002, 0.014, .walking), (0.005, 0.014, .walking), (0.005, 0.011, .walking)]
         ]
 
         var points: [TrackMapPoint] = []
         var index = 0
-        for route in routes {
+        for (routeIndex, route) in routes.enumerated() {
             for item in route {
                 points.append(TrackMapPoint(coordinate: CLLocationCoordinate2D(latitude: center.latitude + item.0,
                                                                                longitude: center.longitude + item.1),
                                             timestamp: Date().addingTimeInterval(Double(index) * 90),
-                                            activityType: item.2))
+                                            activityType: item.2,
+                                            segmentID: routeIndex))
                 index += 1
             }
         }
@@ -421,6 +426,7 @@ private struct TodayTrackDetailView: View {
     private static func distance(for points: [TrackMapPoint]) -> Double {
         guard points.count > 1 else { return 0 }
         return zip(points, points.dropFirst()).reduce(0) { partial, pair in
+            guard pair.0.segmentID == pair.1.segmentID else { return partial }
             let start = CLLocation(latitude: pair.0.coordinate.latitude, longitude: pair.0.coordinate.longitude)
             let end = CLLocation(latitude: pair.1.coordinate.latitude, longitude: pair.1.coordinate.longitude)
             let distance = start.distance(from: end)
@@ -438,12 +444,42 @@ private struct MapControlButton: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 16, weight: .semibold))
-                .frame(width: 36, height: 36)
+                .foregroundStyle(.primary)
+                .frame(width: 44, height: 44)
                 .background(.regularMaterial, in: Circle())
+                .overlay {
+                    Circle().stroke(.white.opacity(0.28), lineWidth: 1)
+                }
                 .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
+    }
+}
+
+private struct TrackTypeLegend: View {
+    private let types: [ActivityType] = [.walking, .running, .cycling, .automotive]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(types) { type in
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(type.trackColor)
+                        .frame(width: 7, height: 7)
+                    Text(type.displayName)
+                        .font(.caption2.weight(.medium))
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(.white.opacity(0.22), lineWidth: 1)
+        }
     }
 }
 

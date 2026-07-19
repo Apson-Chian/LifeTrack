@@ -69,11 +69,12 @@ struct TrackMapView: UIViewRepresentable {
         case .vivid:
             map.addOverlay(TrackDarkOverlay(coordinates: coordinates), level: .aboveRoads)
             for index in 1..<coordinates.count {
-                guard coordinates[index - 1].distance(to: coordinates[index]) < 1_800 else { continue }
+                guard points[index - 1].segmentID == points[index].segmentID,
+                      coordinates[index - 1].distance(to: coordinates[index]) < 1_800 else { continue }
                 let segment = [coordinates[index - 1], coordinates[index]]
-                addPolyline(segment, color: UIColor(red: 0.37, green: 0.52, blue: 1.0, alpha: 0.24), lineWidth: 10, to: map, coordinator: coordinator)
-                let color = UIColor(points[index].activityType.trackColor).withAlphaComponent(0.58)
-                addPolyline(segment, color: color, lineWidth: 2.5, to: map, coordinator: coordinator)
+                let color = UIColor(points[index].activityType.trackColor)
+                addPolyline(segment, color: color.withAlphaComponent(0.24), lineWidth: 12, to: map, coordinator: coordinator)
+                addPolyline(segment, color: color.withAlphaComponent(0.82), lineWidth: 3, to: map, coordinator: coordinator)
             }
             map.addOverlay(TrackGlowOverlay(points: points), level: .aboveRoads)
         }
@@ -175,17 +176,20 @@ struct TrackMapPoint {
     let coordinate: CLLocationCoordinate2D
     let timestamp: Date
     let activityType: ActivityType
+    let segmentID: Int
 
-    init(coordinate: CLLocationCoordinate2D, timestamp: Date = .now, activityType: ActivityType = .unknown) {
+    init(coordinate: CLLocationCoordinate2D, timestamp: Date = .now, activityType: ActivityType = .unknown, segmentID: Int = 0) {
         self.coordinate = coordinate
         self.timestamp = timestamp
         self.activityType = activityType
+        self.segmentID = segmentID
     }
 
     init(_ point: TrackPoint) {
         self.coordinate = CLLocationCoordinate2D(latitude: point.latitude, longitude: point.longitude)
         self.timestamp = point.timestamp
         self.activityType = point.activityType
+        self.segmentID = 0
     }
 }
 
@@ -248,6 +252,7 @@ private final class TrackGlowOverlay: NSObject, MKOverlay {
             let previous = points[index - 1]
             let current = points[index]
             result.append(previous)
+            guard previous.segmentID == current.segmentID else { continue }
             let start = CLLocation(latitude: previous.coordinate.latitude, longitude: previous.coordinate.longitude)
             let end = CLLocation(latitude: current.coordinate.latitude, longitude: current.coordinate.longitude)
             let distance = start.distance(from: end)
@@ -260,7 +265,8 @@ private final class TrackGlowOverlay: NSObject, MKOverlay {
                 let longitude = previous.coordinate.longitude + (current.coordinate.longitude - previous.coordinate.longitude) * progress
                 result.append(TrackMapPoint(coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
                                             timestamp: current.timestamp,
-                                            activityType: current.activityType))
+                                            activityType: current.activityType,
+                                            segmentID: current.segmentID))
             }
         }
         if let last = points.last {
@@ -311,7 +317,7 @@ private final class TrackGlowRenderer: MKOverlayRenderer {
                               y: point.y - radius * 0.55,
                               width: radius * 1.1,
                               height: radius * 1.1)
-        context.setFillColor(UIColor(red: 0.82, green: 0.9, blue: 1.0, alpha: 0.94).cgColor)
+        context.setFillColor(color.withAlphaComponent(0.95).cgColor)
         context.fillEllipse(in: coreRect)
     }
 }
@@ -353,15 +359,15 @@ private final class TrackEndpointAnnotation: NSObject, MKAnnotation {
     }
 }
 
-private extension ActivityType {
+extension ActivityType {
     var trackColor: Color {
         switch self {
-        case .walking: .green
-        case .running: .orange
-        case .cycling: .cyan
-        case .automotive: .purple
+        case .walking: Color(red: 0.35, green: 1.0, blue: 0.72)
+        case .running: Color(red: 1.0, green: 0.72, blue: 0.28)
+        case .cycling: Color(red: 0.38, green: 0.78, blue: 1.0)
+        case .automotive: Color(red: 0.78, green: 0.58, blue: 1.0)
         case .stationary: .gray
-        case .unknown: .blue
+        case .unknown: Color(red: 0.68, green: 0.82, blue: 1.0)
         }
     }
 }
