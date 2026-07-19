@@ -103,8 +103,8 @@ struct TrackMapView: UIViewRepresentable {
             }
             map.addOverlay(TrackGlowOverlay(segments: segments), level: .aboveRoads)
         case .photoDots:
-            map.addOverlay(TrackDarkOverlay(coordinates: coordinates), level: .aboveRoads)
-            map.addOverlay(TrackGlowOverlay(segments: segments, interpolatesBetweenPoints: false), level: .aboveRoads)
+            map.addOverlay(TrackDarkOverlay(coordinates: coordinates, opacity: 0.24), level: .aboveRoads)
+            map.addOverlay(TrackGlowOverlay(segments: segments, interpolatesBetweenPoints: false, presentation: .photoDots), level: .aboveRoads)
         }
     }
 
@@ -441,33 +441,43 @@ private struct TrackDisplaySegment: Identifiable {
 private final class TrackDarkOverlay: NSObject, MKOverlay {
     let coordinate: CLLocationCoordinate2D
     let boundingMapRect: MKMapRect
+    let opacity: CGFloat
 
-    init(coordinates: [CLLocationCoordinate2D]) {
+    init(coordinates: [CLLocationCoordinate2D], opacity: CGFloat = 0.58) {
         let polyline = MKPolyline(coordinates: coordinates, count: coordinates.count)
         self.boundingMapRect = polyline.boundingMapRect.insetBy(dx: -polyline.boundingMapRect.width, dy: -polyline.boundingMapRect.height)
         self.coordinate = MKMapPoint(x: boundingMapRect.midX, y: boundingMapRect.midY).coordinate
+        self.opacity = opacity
     }
 }
 
 private final class TrackDarkRenderer: MKOverlayRenderer {
     override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in context: CGContext) {
+        guard let overlay = overlay as? TrackDarkOverlay else { return }
         let rect = self.rect(for: mapRect)
-        context.setFillColor(UIColor(red: 0.0, green: 0.02, blue: 0.07, alpha: 0.58).cgColor)
+        context.setFillColor(UIColor(red: 0.0, green: 0.02, blue: 0.07, alpha: overlay.opacity).cgColor)
         context.fill(rect)
     }
 }
 
 private final class TrackGlowOverlay: NSObject, MKOverlay {
+    enum Presentation {
+        case track
+        case photoDots
+    }
+
     let points: [TrackMapPoint]
     let coordinate: CLLocationCoordinate2D
     let boundingMapRect: MKMapRect
+    let presentation: Presentation
 
-    init(segments: [TrackDisplaySegment], interpolatesBetweenPoints: Bool = true) {
+    init(segments: [TrackDisplaySegment], interpolatesBetweenPoints: Bool = true, presentation: Presentation = .track) {
         self.points = Self.densified(segments, interpolatesBetweenPoints: interpolatesBetweenPoints)
         let coordinates = self.points.map(\.coordinate)
         let polyline = MKPolyline(coordinates: coordinates, count: coordinates.count)
         self.boundingMapRect = polyline.boundingMapRect
         self.coordinate = MKMapPoint(x: boundingMapRect.midX, y: boundingMapRect.midY).coordinate
+        self.presentation = presentation
     }
 
     private static func densified(_ segments: [TrackDisplaySegment], interpolatesBetweenPoints: Bool) -> [TrackMapPoint] {
@@ -512,7 +522,7 @@ private final class TrackGlowRenderer: MKOverlayRenderer {
     override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in context: CGContext) {
         guard let overlay = overlay as? TrackGlowOverlay else { return }
         let visible = mapRect
-        let baseRadius = max(1.4, min(3.4, 3.2 / sqrt(zoomScale)))
+        let style = glowStyle(for: overlay.presentation, zoomScale: zoomScale)
 
         context.saveGState()
         context.setBlendMode(.plusLighter)
@@ -521,35 +531,47 @@ private final class TrackGlowRenderer: MKOverlayRenderer {
             let mapPoint = MKMapPoint(point.coordinate)
             guard visible.contains(mapPoint) else { continue }
             let screenPoint = self.point(for: mapPoint)
-            let pulse = CGFloat((index % 7)) * 0.18
-            let radius = baseRadius + pulse
-            let color = UIColor(point.activityType.trackColor)
-            drawGlowDot(at: screenPoint, radius: radius, color: color, in: context)
+            let pulse = CGFloat((index % 7)) * style.pulse
+            let radius = style.radius + pulse
+            let color = overlay.presentation == .photoDots ? style.color : UIColor(point.activityType.trackColor)
+            drawGlowDot(at: screenPoint, radius: radius, color: color, alphaScale: style.alphaScale, in: context)
         }
 
         context.restoreGState()
     }
 
-    private func drawGlowDot(at point: CGPoint, radius: CGFloat, color: UIColor, in context: CGContext) {
-        let outerRect = CGRect(x: point.x - radius * 3.1,
-                               y: point.y - radius * 3.1,
-                               width: radius * 6.2,
-                               height: radius * 6.2)
-        context.setFillColor(color.withAlphaComponent(0.18).cgColor)
+    private func glowStyle(for presentation: TrackGlowOverlay.Presentation, zoomScale: MKZoomScale) -> (radius: CGFloat, pulse: CGFloat, alphaScale: CGFloat, color: UIColor) {
+        switch presentation {
+        case .track:
+            return (max(1.4, min(3.4, 3.2 / sqrt(zoomScale))), 0.18, 1, .systemBlue)
+        case .photoDots:
+            let scale = max(CGFloat(zoomScale), 0.0001)
+            let radius = max(2.4, min(11.5, 7.8 / pow(scale, 0.22)))
+            let alpha = max(0.92, min(1.55, 1.35 / pow(scale, 0.08)))
+            return (radius, 0.34, alpha, UIColor(red: 0.58, green: 0.84, blue: 1.0, alpha: 1))
+        }
+    }
+
+    private func drawGlowDot(at point: CGPoint, radius: CGFloat, color: UIColor, alphaScale: CGFloat, in context: CGContext) {
+        let outerRect = CGRect(x: point.x - radius * 3.6,
+                               y: point.y - radius * 3.6,
+                               width: radius * 7.2,
+                               height: radius * 7.2)
+        context.setFillColor(color.withAlphaComponent(min(0.28, 0.18 * alphaScale)).cgColor)
         context.fillEllipse(in: outerRect)
 
         let middleRect = CGRect(x: point.x - radius * 1.7,
                                 y: point.y - radius * 1.7,
                                 width: radius * 3.4,
                                 height: radius * 3.4)
-        context.setFillColor(color.withAlphaComponent(0.42).cgColor)
+        context.setFillColor(color.withAlphaComponent(min(0.62, 0.42 * alphaScale)).cgColor)
         context.fillEllipse(in: middleRect)
 
         let coreRect = CGRect(x: point.x - radius * 0.55,
                               y: point.y - radius * 0.55,
                               width: radius * 1.1,
                               height: radius * 1.1)
-        context.setFillColor(color.withAlphaComponent(0.95).cgColor)
+        context.setFillColor(color.withAlphaComponent(min(1.0, 0.95 * alphaScale)).cgColor)
         context.fillEllipse(in: coreRect)
     }
 }
