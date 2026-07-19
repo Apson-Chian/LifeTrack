@@ -2,7 +2,7 @@ import SwiftUI
 import MapKit
 
 struct TrackMapView: UIViewRepresentable {
-    var points: [TrackPoint]
+    var points: [TrackMapPoint]
     var places: [CustomPlace]
     var currentLocation: CLLocation?
     var cameraRequest: MapCameraRequest?
@@ -16,6 +16,7 @@ struct TrackMapView: UIViewRepresentable {
         map.pointOfInterestFilter = .includingAll
         map.showsCompass = true
         map.showsScale = true
+        map.preferredConfiguration = MKStandardMapConfiguration(elevationStyle: .flat)
         let recognizer = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.longPressed(_:)))
         map.addGestureRecognizer(recognizer)
         return map
@@ -23,11 +24,12 @@ struct TrackMapView: UIViewRepresentable {
 
     func updateUIView(_ map: MKMapView, context: Context) {
         context.coordinator.parent = self
+        configureMapAppearance(map)
         map.removeOverlays(map.overlays)
         map.removeAnnotations(map.annotations.filter { !($0 is MKUserLocation) })
         context.coordinator.overlayStyles.removeAll()
 
-        let coordinates = points.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+        let coordinates = points.map(\.coordinate)
         addTrackOverlays(to: map, coordinates: coordinates, coordinator: context.coordinator)
         addEndpointAnnotations(to: map, coordinates: coordinates)
         for place in places where place.isAlwaysVisible {
@@ -48,18 +50,32 @@ struct TrackMapView: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
+    private func configureMapAppearance(_ map: MKMapView) {
+        switch style {
+        case .standard:
+            map.overrideUserInterfaceStyle = .unspecified
+            map.tintColor = .systemBlue
+        case .vivid:
+            map.overrideUserInterfaceStyle = .dark
+            map.tintColor = UIColor(red: 0.45, green: 0.78, blue: 1.0, alpha: 1)
+        }
+    }
+
     private func addTrackOverlays(to map: MKMapView, coordinates: [CLLocationCoordinate2D], coordinator: Coordinator) {
         guard coordinates.count > 1 else { return }
         switch style {
         case .standard:
             addPolyline(coordinates, color: .systemBlue, lineWidth: 5, to: map, coordinator: coordinator)
         case .vivid:
-            addPolyline(coordinates, color: UIColor.systemCyan.withAlphaComponent(0.25), lineWidth: 12, to: map, coordinator: coordinator)
+            map.addOverlay(TrackDarkOverlay(coordinates: coordinates), level: .aboveRoads)
             for index in 1..<coordinates.count {
+                guard coordinates[index - 1].distance(to: coordinates[index]) < 1_800 else { continue }
                 let segment = [coordinates[index - 1], coordinates[index]]
-                let color = UIColor(points[index].activityType.trackColor)
-                addPolyline(segment, color: color, lineWidth: 5, to: map, coordinator: coordinator)
+                addPolyline(segment, color: UIColor(red: 0.37, green: 0.52, blue: 1.0, alpha: 0.24), lineWidth: 10, to: map, coordinator: coordinator)
+                let color = UIColor(points[index].activityType.trackColor).withAlphaComponent(0.58)
+                addPolyline(segment, color: color, lineWidth: 2.5, to: map, coordinator: coordinator)
             }
+            map.addOverlay(TrackGlowOverlay(points: points), level: .aboveRoads)
         }
     }
 
@@ -78,12 +94,13 @@ struct TrackMapView: UIViewRepresentable {
 
     private func applyCameraRequestIfNeeded(to map: MKMapView, coordinates: [CLLocationCoordinate2D], coordinator: Coordinator) {
         guard let cameraRequest, coordinator.lastCameraRequestID != cameraRequest.id else { return }
-        coordinator.lastCameraRequestID = cameraRequest.id
         switch cameraRequest.target {
         case .currentLocation:
             guard let coordinate = currentLocation?.coordinate else { return }
+            coordinator.lastCameraRequestID = cameraRequest.id
             map.setRegion(MKCoordinateRegion(center: coordinate, latitudinalMeters: 700, longitudinalMeters: 700), animated: true)
         case .route:
+            coordinator.lastCameraRequestID = cameraRequest.id
             setVisibleRoute(on: map, coordinates: coordinates)
         }
     }
@@ -115,6 +132,12 @@ struct TrackMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            if let glow = overlay as? TrackGlowOverlay {
+                return TrackGlowRenderer(overlay: glow)
+            }
+            if let dark = overlay as? TrackDarkOverlay {
+                return TrackDarkRenderer(overlay: dark)
+            }
             if let line = overlay as? MKPolyline {
                 let style = overlayStyles[ObjectIdentifier(line)] ?? TrackOverlayStyle(color: .systemBlue, lineWidth: 5)
                 let renderer = MKPolylineRenderer(polyline: line)
@@ -148,6 +171,24 @@ struct TrackMapView: UIViewRepresentable {
     }
 }
 
+struct TrackMapPoint {
+    let coordinate: CLLocationCoordinate2D
+    let timestamp: Date
+    let activityType: ActivityType
+
+    init(coordinate: CLLocationCoordinate2D, timestamp: Date = .now, activityType: ActivityType = .unknown) {
+        self.coordinate = coordinate
+        self.timestamp = timestamp
+        self.activityType = activityType
+    }
+
+    init(_ point: TrackPoint) {
+        self.coordinate = CLLocationCoordinate2D(latitude: point.latitude, longitude: point.longitude)
+        self.timestamp = point.timestamp
+        self.activityType = point.activityType
+    }
+}
+
 struct MapCameraRequest: Equatable {
     let id = UUID()
     let target: Target
@@ -166,6 +207,113 @@ enum TrackMapStyle {
 private struct TrackOverlayStyle {
     let color: UIColor
     let lineWidth: CGFloat
+}
+
+private final class TrackDarkOverlay: NSObject, MKOverlay {
+    let coordinate: CLLocationCoordinate2D
+    let boundingMapRect: MKMapRect
+
+    init(coordinates: [CLLocationCoordinate2D]) {
+        let polyline = MKPolyline(coordinates: coordinates, count: coordinates.count)
+        self.boundingMapRect = polyline.boundingMapRect.insetBy(dx: -polyline.boundingMapRect.width, dy: -polyline.boundingMapRect.height)
+        self.coordinate = MKMapPoint(x: boundingMapRect.midX, y: boundingMapRect.midY).coordinate
+    }
+}
+
+private final class TrackDarkRenderer: MKOverlayRenderer {
+    override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in context: CGContext) {
+        let rect = self.rect(for: mapRect)
+        context.setFillColor(UIColor(red: 0.0, green: 0.02, blue: 0.07, alpha: 0.58).cgColor)
+        context.fill(rect)
+    }
+}
+
+private final class TrackGlowOverlay: NSObject, MKOverlay {
+    let points: [TrackMapPoint]
+    let coordinate: CLLocationCoordinate2D
+    let boundingMapRect: MKMapRect
+
+    init(points: [TrackMapPoint]) {
+        self.points = Self.densified(points)
+        let coordinates = self.points.map(\.coordinate)
+        let polyline = MKPolyline(coordinates: coordinates, count: coordinates.count)
+        self.boundingMapRect = polyline.boundingMapRect
+        self.coordinate = MKMapPoint(x: boundingMapRect.midX, y: boundingMapRect.midY).coordinate
+    }
+
+    private static func densified(_ points: [TrackMapPoint]) -> [TrackMapPoint] {
+        guard points.count > 1 else { return points }
+        var result: [TrackMapPoint] = []
+        for index in 1..<points.count {
+            let previous = points[index - 1]
+            let current = points[index]
+            result.append(previous)
+            let start = CLLocation(latitude: previous.coordinate.latitude, longitude: previous.coordinate.longitude)
+            let end = CLLocation(latitude: current.coordinate.latitude, longitude: current.coordinate.longitude)
+            let distance = start.distance(from: end)
+            guard distance < 1_800 else { continue }
+            let steps = min(max(Int(distance / 42), 0), 80)
+            guard steps > 0 else { continue }
+            for step in 1...steps {
+                let progress = Double(step) / Double(steps + 1)
+                let latitude = previous.coordinate.latitude + (current.coordinate.latitude - previous.coordinate.latitude) * progress
+                let longitude = previous.coordinate.longitude + (current.coordinate.longitude - previous.coordinate.longitude) * progress
+                result.append(TrackMapPoint(coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
+                                            timestamp: current.timestamp,
+                                            activityType: current.activityType))
+            }
+        }
+        if let last = points.last {
+            result.append(last)
+        }
+        return result
+    }
+}
+
+private final class TrackGlowRenderer: MKOverlayRenderer {
+    override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in context: CGContext) {
+        guard let overlay = overlay as? TrackGlowOverlay else { return }
+        let visible = mapRect
+        let baseRadius = max(1.4, min(3.4, 3.2 / sqrt(zoomScale)))
+
+        context.saveGState()
+        context.setBlendMode(.plusLighter)
+
+        for (index, point) in overlay.points.enumerated() {
+            let mapPoint = MKMapPoint(point.coordinate)
+            guard visible.contains(mapPoint) else { continue }
+            let screenPoint = self.point(for: mapPoint)
+            let pulse = CGFloat((index % 7)) * 0.18
+            let radius = baseRadius + pulse
+            let color = UIColor(point.activityType.trackColor)
+            drawGlowDot(at: screenPoint, radius: radius, color: color, in: context)
+        }
+
+        context.restoreGState()
+    }
+
+    private func drawGlowDot(at point: CGPoint, radius: CGFloat, color: UIColor, in context: CGContext) {
+        let outerRect = CGRect(x: point.x - radius * 3.1,
+                               y: point.y - radius * 3.1,
+                               width: radius * 6.2,
+                               height: radius * 6.2)
+        context.setFillColor(color.withAlphaComponent(0.18).cgColor)
+        context.fillEllipse(in: outerRect)
+
+        let middleRect = CGRect(x: point.x - radius * 1.7,
+                                y: point.y - radius * 1.7,
+                                width: radius * 3.4,
+                                height: radius * 3.4)
+        context.setFillColor(color.withAlphaComponent(0.42).cgColor)
+        context.fillEllipse(in: middleRect)
+
+        let coreRect = CGRect(x: point.x - radius * 0.55,
+                              y: point.y - radius * 0.55,
+                              width: radius * 1.1,
+                              height: radius * 1.1)
+        context.setFillColor(UIColor(red: 0.82, green: 0.9, blue: 1.0, alpha: 0.94).cgColor)
+        context.fillEllipse(in: coreRect)
+    }
 }
 
 private final class TrackEndpointAnnotation: NSObject, MKAnnotation {
@@ -215,5 +363,11 @@ private extension ActivityType {
         case .stationary: .gray
         case .unknown: .blue
         }
+    }
+}
+
+private extension CLLocationCoordinate2D {
+    func distance(to coordinate: CLLocationCoordinate2D) -> CLLocationDistance {
+        CLLocation(latitude: latitude, longitude: longitude).distance(from: CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude))
     }
 }

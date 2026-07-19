@@ -8,25 +8,31 @@ enum AMapLauncher {
         return UIApplication.shared.canOpenURL(url)
     }
 
-    static func openNavigation(to coordinate: CLLocationCoordinate2D, name: String, style: NavigationStyle = .fastest) {
+    static func openRoutePlan(to coordinate: CLLocationCoordinate2D, name: String, mode: RouteMode = .driving) {
         var components = URLComponents()
         components.scheme = "iosamap"
-        components.host = "navi"
+        components.host = "path"
         components.queryItems = [
             URLQueryItem(name: "sourceApplication", value: "LifeTrack"),
-            URLQueryItem(name: "poiname", value: name),
-            URLQueryItem(name: "lat", value: String(coordinate.latitude)),
-            URLQueryItem(name: "lon", value: String(coordinate.longitude)),
+            URLQueryItem(name: "dlat", value: String(coordinate.latitude)),
+            URLQueryItem(name: "dlon", value: String(coordinate.longitude)),
+            URLQueryItem(name: "dname", value: name),
             URLQueryItem(name: "dev", value: "0"),
-            URLQueryItem(name: "style", value: style.rawValue)
+            URLQueryItem(name: "t", value: mode.rawValue),
+            URLQueryItem(name: "m", value: "0")
         ]
         guard let url = components.url else { return }
         UIApplication.shared.open(url)
     }
 
-    enum NavigationStyle: String {
-        case fastest = "0"
-        case shortest = "2"
-        case avoidCongestion = "4"
+    static func openNavigation(to coordinate: CLLocationCoordinate2D, name: String) {
+        openRoutePlan(to: coordinate, name: name)
+    }
+
+    enum RouteMode: String {
+        case driving = "0"
+        case transit = "1"
+        case walking = "2"
+        case cycling = "3"
     }
 }

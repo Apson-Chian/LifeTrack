@@ -20,6 +20,9 @@ struct TodayView: View {
     private var todayPoints: [TrackPoint] {
         todaySessions.flatMap(\.trackPoints).sorted { $0.timestamp < $1.timestamp }
     }
+    private var todayMapPoints: [TrackMapPoint] {
+        todayPoints.map(TrackMapPoint.init)
+    }
     private var totalDistance: Double { todaySessions.reduce(0) { $0 + $1.distance } }
     private var activeDuration: TimeInterval { todaySessions.reduce(0) { $0 + $1.duration } }
 
@@ -56,11 +59,13 @@ struct TodayView: View {
                     openAMapNavigation(to: destination.coordinate, name: destination.name)
                 }
             }
-            .confirmationDialog("活动类型", isPresented: $showActivityPicker) {
-                Button("自动识别") { selectActivity(nil) }
-                ForEach(ActivityType.allCases.filter { $0 != .stationary }) { type in
-                    Button(type.displayName) { selectActivity(type) }
+            .sheet(isPresented: $showActivityPicker) {
+                ActivityPickerSheet(selection: manualActivity) { activity in
+                    selectActivity(activity)
+                    showActivityPicker = false
                 }
+                .presentationDetents([.height(360)])
+                .presentationDragIndicator(.visible)
             }
             .alert("未安装高德地图", isPresented: $showAmapUnavailable) {
                 Button("好", role: .cancel) { }
@@ -72,7 +77,7 @@ struct TodayView: View {
 
     private var todayMap: some View {
         ZStack(alignment: .topTrailing) {
-            TrackMapView(points: todayPoints,
+            TrackMapView(points: todayMapPoints,
                          places: places,
                          currentLocation: locationService.currentLocation,
                          cameraRequest: mapCameraRequest) { coordinate in
@@ -83,9 +88,9 @@ struct TodayView: View {
 
             VStack(spacing: 8) {
                 MapControlButton(symbol: "location.fill", title: "定位到当前位置") {
+                    locationService.requestCurrentLocation()
                     mapCameraRequest = MapCameraRequest(target: .currentLocation)
                 }
-                .disabled(locationService.currentLocation == nil)
 
                 MapControlButton(symbol: "point.3.connected.trianglepath.dotted", title: "显示完整轨迹") {
                     mapCameraRequest = MapCameraRequest(target: .route)
@@ -213,7 +218,7 @@ struct TodayView: View {
 
     private func openAMapNavigation(to coordinate: CLLocationCoordinate2D, name: String) {
         if AMapLauncher.canOpen() {
-            AMapLauncher.openNavigation(to: coordinate, name: name)
+            AMapLauncher.openRoutePlan(to: coordinate, name: name)
         } else {
             showAmapUnavailable = true
         }
@@ -234,6 +239,15 @@ private struct TodayTrackDetailView: View {
         sessions.flatMap(\.trackPoints).sorted { $0.timestamp < $1.timestamp }
     }
 
+    private var mapPoints: [TrackMapPoint] {
+        let recordedPoints = points.map(TrackMapPoint.init)
+        return recordedPoints.isEmpty ? Self.sampleTrackPoints(near: currentLocation?.coordinate) : recordedPoints
+    }
+
+    private var isShowingSampleTrack: Bool {
+        points.isEmpty
+    }
+
     private var totalDistance: Double {
         sessions.reduce(0) { $0 + $1.distance }
     }
@@ -242,11 +256,19 @@ private struct TodayTrackDetailView: View {
         sessions.reduce(0) { $0 + $1.duration }
     }
 
+    private var displayDistance: Double {
+        isShowingSampleTrack ? Self.distance(for: mapPoints) : totalDistance
+    }
+
+    private var displayDuration: TimeInterval {
+        isShowingSampleTrack ? 2_280 : duration
+    }
+
     private var latestCoordinate: CLLocationCoordinate2D? {
         if let point = points.last {
             return CLLocationCoordinate2D(latitude: point.latitude, longitude: point.longitude)
         }
-        return currentLocation?.coordinate
+        return isShowingSampleTrack ? mapPoints.last?.coordinate : currentLocation?.coordinate
     }
 
     var body: some View {
@@ -277,8 +299,8 @@ private struct TodayTrackDetailView: View {
 
                 Grid(horizontalSpacing: 10, verticalSpacing: 10) {
                     GridRow {
-                        StatisticTile(title: "今日距离", value: Formatters.distance(totalDistance), symbol: "arrow.left.and.right")
-                        StatisticTile(title: "今日时长", value: Formatters.duration(duration), symbol: "clock")
+                        StatisticTile(title: "今日距离", value: Formatters.distance(displayDistance), symbol: "arrow.left.and.right")
+                        StatisticTile(title: "今日时长", value: Formatters.duration(displayDuration), symbol: "clock")
                     }
                     GridRow {
                         StatisticTile(title: "轨迹点", value: "\(points.count)", symbol: "point.3.connected.trianglepath.dotted")
@@ -307,7 +329,7 @@ private struct TodayTrackDetailView: View {
 
     private var vividTrackMap: some View {
         ZStack(alignment: .bottomLeading) {
-            TrackMapView(points: points,
+            TrackMapView(points: mapPoints,
                          places: places,
                          currentLocation: currentLocation,
                          cameraRequest: mapCameraRequest,
@@ -316,9 +338,10 @@ private struct TodayTrackDetailView: View {
             .frame(height: 420)
             .clipShape(RoundedRectangle(cornerRadius: 12))
 
-            TrackMapMetricRibbon(distance: Formatters.distance(totalDistance),
-                                 duration: Formatters.duration(duration),
-                                 points: points.count)
+            TrackMapMetricRibbon(distance: Formatters.distance(displayDistance),
+                                 duration: Formatters.duration(displayDuration),
+                                 points: mapPoints.count,
+                                 isSample: isShowingSampleTrack)
             .padding(12)
 
             VStack(spacing: 8) {
@@ -330,7 +353,6 @@ private struct TodayTrackDetailView: View {
                 MapControlButton(symbol: "point.3.connected.trianglepath.dotted", title: "显示完整轨迹") {
                     mapCameraRequest = MapCameraRequest(target: .route)
                 }
-                .disabled(points.isEmpty)
             }
             .padding(12)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
@@ -362,9 +384,47 @@ private struct TodayTrackDetailView: View {
 
     private func openAMapNavigation(to coordinate: CLLocationCoordinate2D, name: String) {
         if AMapLauncher.canOpen() {
-            AMapLauncher.openNavigation(to: coordinate, name: name)
+            AMapLauncher.openRoutePlan(to: coordinate, name: name)
         } else {
             showAmapUnavailable = true
+        }
+    }
+
+    private static func sampleTrackPoints(near coordinate: CLLocationCoordinate2D?) -> [TrackMapPoint] {
+        let center = coordinate ?? CLLocationCoordinate2D(latitude: 32.0415, longitude: 118.7950)
+        let routes: [[(Double, Double, ActivityType)]] = [
+            [(-0.020, -0.016, .walking), (-0.017, -0.010, .walking), (-0.014, -0.006, .running), (-0.010, -0.004, .running), (-0.006, -0.001, .cycling), (-0.002, 0.002, .cycling), (0.003, 0.006, .automotive), (0.008, 0.010, .automotive)],
+            [(-0.017, 0.017, .cycling), (-0.013, 0.012, .cycling), (-0.009, 0.009, .walking), (-0.004, 0.008, .walking), (0.001, 0.009, .running), (0.005, 0.013, .running), (0.008, 0.018, .cycling)],
+            [(-0.011, -0.019, .automotive), (-0.010, -0.012, .automotive), (-0.009, -0.005, .walking), (-0.009, 0.002, .walking), (-0.008, 0.010, .running), (-0.006, 0.018, .running)],
+            [(-0.001, -0.020, .cycling), (-0.001, -0.013, .cycling), (0.000, -0.006, .walking), (0.001, 0.001, .walking), (0.002, 0.008, .running), (0.004, 0.016, .running)],
+            [(0.011, -0.018, .automotive), (0.008, -0.011, .automotive), (0.006, -0.005, .cycling), (0.005, 0.002, .cycling), (0.006, 0.009, .walking), (0.009, 0.016, .walking)],
+            [(-0.018, -0.005, .walking), (-0.012, -0.003, .walking), (-0.006, -0.002, .running), (0.001, -0.002, .running), (0.008, -0.001, .cycling), (0.015, 0.001, .cycling)],
+            [(-0.014, 0.006, .cycling), (-0.007, 0.004, .cycling), (0.000, 0.003, .walking), (0.006, 0.004, .walking), (0.013, 0.006, .running)],
+            [(-0.006, -0.011, .walking), (-0.003, -0.008, .walking), (0.001, -0.007, .running), (0.004, -0.009, .running), (0.006, -0.013, .cycling), (0.005, -0.017, .cycling)],
+            [(-0.005, 0.011, .walking), (-0.002, 0.014, .walking), (0.002, 0.014, .running), (0.005, 0.011, .running), (0.005, 0.007, .cycling), (0.001, 0.006, .cycling), (-0.003, 0.008, .walking), (-0.005, 0.011, .walking)]
+        ]
+
+        var points: [TrackMapPoint] = []
+        var index = 0
+        for route in routes {
+            for item in route {
+                points.append(TrackMapPoint(coordinate: CLLocationCoordinate2D(latitude: center.latitude + item.0,
+                                                                               longitude: center.longitude + item.1),
+                                            timestamp: Date().addingTimeInterval(Double(index) * 90),
+                                            activityType: item.2))
+                index += 1
+            }
+        }
+        return points
+    }
+
+    private static func distance(for points: [TrackMapPoint]) -> Double {
+        guard points.count > 1 else { return 0 }
+        return zip(points, points.dropFirst()).reduce(0) { partial, pair in
+            let start = CLLocation(latitude: pair.0.coordinate.latitude, longitude: pair.0.coordinate.longitude)
+            let end = CLLocation(latitude: pair.1.coordinate.latitude, longitude: pair.1.coordinate.longitude)
+            let distance = start.distance(from: end)
+            return distance < 1_800 ? partial + distance : partial
         }
     }
 }
@@ -391,9 +451,16 @@ private struct TrackMapMetricRibbon: View {
     let distance: String
     let duration: String
     let points: Int
+    var isSample = false
 
     var body: some View {
         HStack(spacing: 14) {
+            if isSample {
+                Label("示例", systemImage: "sparkles")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+                Divider().frame(height: 26)
+            }
             TrackMapMetric(value: distance, title: "距离")
             Divider().frame(height: 26)
             TrackMapMetric(value: duration, title: "时长")
@@ -423,6 +490,55 @@ private struct TrackMapMetric: View {
             Text(title)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct ActivityPickerSheet: View {
+    let selection: ActivityType?
+    let onSelect: (ActivityType?) -> Void
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Button {
+                    onSelect(nil)
+                } label: {
+                    ActivityChoiceRow(title: "自动识别", symbol: "sparkles", isSelected: selection == nil)
+                }
+
+                ForEach(ActivityType.allCases.filter { $0 != .stationary }) { type in
+                    Button {
+                        onSelect(type)
+                    } label: {
+                        ActivityChoiceRow(title: type.displayName, symbol: type.symbolName, isSelected: selection == type)
+                    }
+                }
+            }
+            .navigationTitle("活动类型")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}
+
+private struct ActivityChoiceRow: View {
+    let title: String
+    let symbol: String
+    let isSelected: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .foregroundStyle(.tint)
+                .frame(width: 24)
+            Text(title)
+                .foregroundStyle(.primary)
+            Spacer()
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.tint)
+            }
         }
     }
 }

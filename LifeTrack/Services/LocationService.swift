@@ -44,6 +44,19 @@ final class LocationService: NSObject, ObservableObject {
         }
     }
 
+    func requestCurrentLocation() {
+        switch manager.authorizationStatus {
+        case .notDetermined:
+            manager.requestWhenInUseAuthorization()
+        case .authorizedAlways, .authorizedWhenInUse:
+            manager.requestLocation()
+        case .denied, .restricted:
+            lastError = "需要允许定位访问后才能回到当前位置。"
+        @unknown default:
+            lastError = "无法确认定位授权状态。"
+        }
+    }
+
     func startRecording(manualActivity: ActivityType? = nil) {
         guard let modelContext else {
             lastError = "数据存储尚未准备好。"

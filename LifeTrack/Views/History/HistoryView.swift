@@ -130,10 +130,14 @@ struct SessionDetailView: View {
     let session: ActivitySession
     @Query private var places: [CustomPlace]
 
+    private var mapPoints: [TrackMapPoint] {
+        session.trackPoints.sorted { $0.timestamp < $1.timestamp }.map(TrackMapPoint.init)
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                TrackMapView(points: session.trackPoints.sorted { $0.timestamp < $1.timestamp }, places: places, currentLocation: nil) { _ in }
+                TrackMapView(points: mapPoints, places: places, currentLocation: nil) { _ in }
                     .frame(height: 290)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                 Grid(horizontalSpacing: 10, verticalSpacing: 10) {
