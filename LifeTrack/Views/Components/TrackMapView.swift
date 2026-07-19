@@ -56,7 +56,7 @@ struct TrackMapView: UIViewRepresentable {
         case .standard:
             map.overrideUserInterfaceStyle = .unspecified
             map.tintColor = .systemBlue
-        case .vivid:
+        case .vivid, .photoDots:
             map.overrideUserInterfaceStyle = .dark
             map.tintColor = UIColor(red: 0.45, green: 0.78, blue: 1.0, alpha: 1)
         }
@@ -102,6 +102,9 @@ struct TrackMapView: UIViewRepresentable {
                 addPolyline(segment.coordinates, color: color.withAlphaComponent(0.82), lineWidth: 3, to: map, coordinator: coordinator)
             }
             map.addOverlay(TrackGlowOverlay(segments: segments), level: .aboveRoads)
+        case .photoDots:
+            map.addOverlay(TrackDarkOverlay(coordinates: coordinates), level: .aboveRoads)
+            map.addOverlay(TrackGlowOverlay(segments: segments, interpolatesBetweenPoints: false), level: .aboveRoads)
         }
     }
 
@@ -291,6 +294,7 @@ struct MapCameraRequest: Equatable {
 enum TrackMapStyle {
     case standard
     case vivid
+    case photoDots
 }
 
 private struct TrackOverlayStyle {
@@ -458,15 +462,15 @@ private final class TrackGlowOverlay: NSObject, MKOverlay {
     let coordinate: CLLocationCoordinate2D
     let boundingMapRect: MKMapRect
 
-    init(segments: [TrackDisplaySegment]) {
-        self.points = Self.densified(segments)
+    init(segments: [TrackDisplaySegment], interpolatesBetweenPoints: Bool = true) {
+        self.points = Self.densified(segments, interpolatesBetweenPoints: interpolatesBetweenPoints)
         let coordinates = self.points.map(\.coordinate)
         let polyline = MKPolyline(coordinates: coordinates, count: coordinates.count)
         self.boundingMapRect = polyline.boundingMapRect
         self.coordinate = MKMapPoint(x: boundingMapRect.midX, y: boundingMapRect.midY).coordinate
     }
 
-    private static func densified(_ segments: [TrackDisplaySegment]) -> [TrackMapPoint] {
+    private static func densified(_ segments: [TrackDisplaySegment], interpolatesBetweenPoints: Bool) -> [TrackMapPoint] {
         var result: [TrackMapPoint] = []
         for segment in segments {
             guard segment.coordinates.count > 1 else { continue }
@@ -477,6 +481,15 @@ private final class TrackGlowOverlay: NSObject, MKOverlay {
                                             activityType: segment.activityType,
                                             segmentID: segment.id,
                                             source: segment.source))
+                guard interpolatesBetweenPoints else {
+                    if index == segment.coordinates.count - 1 {
+                        result.append(TrackMapPoint(coordinate: current,
+                                                    activityType: segment.activityType,
+                                                    segmentID: segment.id,
+                                                    source: segment.source))
+                    }
+                    continue
+                }
                 let distance = previous.distance(to: current)
                 let steps = min(max(Int(distance / 36), 0), 80)
                 guard steps > 0 else { continue }

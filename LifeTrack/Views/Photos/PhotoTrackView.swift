@@ -1,13 +1,12 @@
 import SwiftUI
-import PhotosUI
+import Photos
 import CoreLocation
-import ImageIO
 
 struct PhotoTrackView: View {
-    @State private var selectedItems: [PhotosPickerItem] = []
     @State private var photoPoints: [PhotoLocationPoint] = []
-    @State private var skippedPhotoCount = 0
+    @State private var scannedPhotoCount = 0
     @State private var isLoading = false
+    @State private var authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @State private var cameraRequest: MapCameraRequest?
 
     private var mapPoints: [TrackMapPoint] {
@@ -18,14 +17,6 @@ struct PhotoTrackView: View {
                           segmentID: 0,
                           horizontalAccuracy: 1,
                           source: .photo)
-        }
-    }
-
-    private var totalDistance: Double {
-        guard photoPoints.count > 1 else { return 0 }
-        return zip(photoPoints, photoPoints.dropFirst()).reduce(0) { partial, pair in
-            partial + CLLocation(latitude: pair.0.coordinate.latitude, longitude: pair.0.coordinate.longitude)
-                .distance(from: CLLocation(latitude: pair.1.coordinate.latitude, longitude: pair.1.coordinate.longitude))
         }
     }
 
@@ -43,14 +34,17 @@ struct PhotoTrackView: View {
             .navigationTitle("照片轨迹")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    PhotosPicker(selection: $selectedItems, maxSelectionCount: 200, matching: .images) {
-                        Image(systemName: "photo.on.rectangle.angled")
+                    Button {
+                        Task { await loadPhotoLocations() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
                     }
-                    .accessibilityLabel("选择照片")
+                    .disabled(isLoading)
+                    .accessibilityLabel("重新扫描照片")
                 }
             }
-            .onChange(of: selectedItems) { _, items in
-                Task { await importLocations(from: items) }
+            .task {
+                await loadPhotoLocations()
             }
         }
     }
@@ -62,7 +56,7 @@ struct PhotoTrackView: View {
                              places: [],
                              currentLocation: nil,
                              cameraRequest: cameraRequest,
-                             style: .vivid) { _ in }
+                             style: .photoDots) { _ in }
                 .frame(height: 460)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .overlay(alignment: .topTrailing) {
@@ -82,7 +76,7 @@ struct PhotoTrackView: View {
                     .accessibilityLabel("适配全部照片轨迹")
                 }
             } else {
-                ContentUnavailableView("暂无照片轨迹", systemImage: "photo.badge.map", description: Text("选择带定位信息的照片后生成轨迹图。"))
+                ContentUnavailableView(emptyTitle, systemImage: "photo.badge.map", description: Text(emptyDescription))
                     .frame(maxWidth: .infinity, minHeight: 320)
                     .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
             }
@@ -92,22 +86,24 @@ struct PhotoTrackView: View {
 
     private var controls: some View {
         HStack(spacing: 10) {
-            PhotosPicker(selection: $selectedItems, maxSelectionCount: 200, matching: .images) {
-                Label("选择照片", systemImage: "photo.stack")
+            Button {
+                Task { await loadPhotoLocations() }
+            } label: {
+                Label(isLoading ? "扫描中" : "扫描全部照片", systemImage: "photo.stack")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
+            .disabled(isLoading)
 
             Button {
-                selectedItems = []
                 photoPoints = []
-                skippedPhotoCount = 0
+                scannedPhotoCount = 0
             } label: {
                 Label("清空", systemImage: "trash")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
-            .disabled(photoPoints.isEmpty && selectedItems.isEmpty)
+            .disabled(photoPoints.isEmpty && scannedPhotoCount == 0)
         }
         .padding(.horizontal)
     }
@@ -116,11 +112,11 @@ struct PhotoTrackView: View {
         Grid(horizontalSpacing: 10, verticalSpacing: 10) {
             GridRow {
                 StatisticTile(title: "定位照片", value: "\(photoPoints.count)", symbol: "mappin.and.ellipse")
-                StatisticTile(title: "连线距离", value: Formatters.distance(totalDistance), symbol: "point.3.connected.trianglepath.dotted")
+                StatisticTile(title: "扫描照片", value: "\(scannedPhotoCount)", symbol: "photo")
             }
             GridRow {
-                StatisticTile(title: "已跳过", value: "\(skippedPhotoCount)", symbol: "photo.badge.exclamationmark")
-                StatisticTile(title: "状态", value: isLoading ? "读取中" : "完成", symbol: "checkmark.circle")
+                StatisticTile(title: "已跳过", value: "\(max(scannedPhotoCount - photoPoints.count, 0))", symbol: "photo.badge.exclamationmark")
+                StatisticTile(title: "状态", value: statusText, symbol: "checkmark.circle")
             }
         }
         .padding(.horizontal)
@@ -136,7 +132,7 @@ struct PhotoTrackView: View {
                     .padding(12)
                     .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
             } else {
-                ForEach(Array(photoPoints.enumerated()), id: \.element.id) { index, point in
+                ForEach(Array(photoPoints.prefix(80).enumerated()), id: \.element.id) { index, point in
                     HStack(spacing: 10) {
                         Text("\(index + 1)")
                             .font(.caption.weight(.bold))
@@ -144,7 +140,7 @@ struct PhotoTrackView: View {
                             .frame(width: 24, height: 24)
                             .background(Color.blue, in: Circle())
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(point.date, format: .dateTime.month().day().hour().minute())
+                            Text(point.date, format: .dateTime.year().month().day().hour().minute())
                                 .font(.subheadline.weight(.semibold))
                             Text(String(format: "%.5f, %.5f", point.coordinate.latitude, point.coordinate.longitude))
                                 .font(.caption)
@@ -155,74 +151,95 @@ struct PhotoTrackView: View {
                     .padding(12)
                     .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
                 }
+                if photoPoints.count > 80 {
+                    Text("已显示前 80 个定位点，地图包含全部点。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(.horizontal)
     }
 
+    private var emptyTitle: String {
+        switch authorizationStatus {
+        case .authorized, .limited:
+            return "暂无照片轨迹"
+        case .notDetermined:
+            return "需要照片权限"
+        case .denied, .restricted:
+            return "无法访问照片"
+        @unknown default:
+            return "无法读取照片"
+        }
+    }
+
+    private var emptyDescription: String {
+        switch authorizationStatus {
+        case .authorized:
+            return "相册里没有读取到带定位信息的照片。"
+        case .limited:
+            return "当前只允许访问部分照片，只会扫描已授权照片。"
+        case .notDetermined:
+            return "允许访问照片后会自动扫描带定位信息的照片。"
+        case .denied, .restricted:
+            return "请在系统设置里允许 LifeTrack 访问照片。"
+        @unknown default:
+            return "照片权限状态未知。"
+        }
+    }
+
+    private var statusText: String {
+        if isLoading { return "扫描中" }
+        switch authorizationStatus {
+        case .authorized: return "全部"
+        case .limited: return "部分"
+        case .notDetermined: return "待授权"
+        case .denied, .restricted: return "无权限"
+        @unknown default: return "未知"
+        }
+    }
+
     @MainActor
-    private func importLocations(from items: [PhotosPickerItem]) async {
+    private func loadPhotoLocations() async {
         isLoading = true
         defer { isLoading = false }
 
-        var importedPoints: [PhotoLocationPoint] = []
-        var skipped = 0
-
-        for (index, item) in items.enumerated() {
-            guard let data = try? await item.loadTransferable(type: Data.self),
-                  let point = Self.locationPoint(from: data, fallbackIndex: index) else {
-                skipped += 1
-                continue
-            }
-            importedPoints.append(point)
+        let status = await requestPhotoAccessIfNeeded()
+        authorizationStatus = status
+        guard status == .authorized || status == .limited else {
+            photoPoints = []
+            scannedPhotoCount = 0
+            return
         }
 
+        let fetchOptions = PHFetchOptions()
+        fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
+        fetchOptions.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+        let assets = PHAsset.fetchAssets(with: fetchOptions)
+
+        var importedPoints: [PhotoLocationPoint] = []
+        assets.enumerateObjects { asset, _, _ in
+            guard let location = asset.location else { return }
+            importedPoints.append(PhotoLocationPoint(coordinate: location.coordinate,
+                                                     date: asset.creationDate ?? Date.distantPast))
+        }
+
+        scannedPhotoCount = assets.count
         photoPoints = importedPoints.sorted { $0.date < $1.date }
-        skippedPhotoCount = skipped
         if photoPoints.count > 1 {
             cameraRequest = MapCameraRequest(target: .route)
         }
     }
 
-    private static func locationPoint(from data: Data, fallbackIndex: Int) -> PhotoLocationPoint? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let gps = properties[kCGImagePropertyGPSDictionary] as? [CFString: Any],
-              let latitude = coordinateValue(from: gps, valueKey: kCGImagePropertyGPSLatitude, refKey: kCGImagePropertyGPSLatitudeRef, negativeRef: "S"),
-              let longitude = coordinateValue(from: gps, valueKey: kCGImagePropertyGPSLongitude, refKey: kCGImagePropertyGPSLongitudeRef, negativeRef: "W") else {
-            return nil
+    private func requestPhotoAccessIfNeeded() async -> PHAuthorizationStatus {
+        let current = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard current == .notDetermined else { return current }
+        return await withCheckedContinuation { continuation in
+            PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
+                continuation.resume(returning: status)
+            }
         }
-
-        let date = captureDate(from: properties) ?? Date(timeIntervalSince1970: TimeInterval(fallbackIndex))
-        return PhotoLocationPoint(coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude), date: date)
-    }
-
-    private static func coordinateValue(from gps: [CFString: Any], valueKey: CFString, refKey: CFString, negativeRef: String) -> Double? {
-        let rawValue = gps[valueKey]
-        let value: Double?
-        if let number = rawValue as? NSNumber {
-            value = number.doubleValue
-        } else if let string = rawValue as? String {
-            value = Double(string)
-        } else {
-            value = nil
-        }
-        guard var coordinate = value else { return nil }
-        if let ref = gps[refKey] as? String, ref.uppercased() == negativeRef {
-            coordinate = -coordinate
-        }
-        return coordinate
-    }
-
-    private static func captureDate(from properties: [CFString: Any]) -> Date? {
-        let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any]
-        let dateString = exif?[kCGImagePropertyExifDateTimeOriginal] as? String
-            ?? properties[kCGImagePropertyTIFFDictionary].flatMap { ($0 as? [CFString: Any])?[kCGImagePropertyTIFFDateTime] as? String }
-        guard let dateString else { return nil }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        return formatter.date(from: dateString)
     }
 }
 

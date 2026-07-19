@@ -26,6 +26,8 @@
     <string>LifeTrack needs background location access to finish an active trip when the app is not open.</string>
     <key>NSMotionUsageDescription</key>
     <string>LifeTrack uses motion activity to adapt trip recording accuracy and save battery.</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>LifeTrack reads photo location metadata to generate a photo-based travel dot map.</string>
     <key>UIBackgroundModes</key>
     <array>
         <string>location</string>
