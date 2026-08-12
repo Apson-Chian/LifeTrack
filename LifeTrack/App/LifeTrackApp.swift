@@ -12,7 +12,9 @@ struct LifeTrackApp: App {
             DailySummary.self,
             PhotoAnalysisRecord.self,
             TravelTimelineTrip.self,
-            TravelTimelineNode.self
+            TravelTimelineNode.self,
+            JourneyRecord.self,
+            TravelArchiveRecord.self
         ])
         let configuration = ModelConfiguration("LifeTrack", schema: schema)
 

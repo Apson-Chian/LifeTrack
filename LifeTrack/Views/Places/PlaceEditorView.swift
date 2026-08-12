@@ -29,6 +29,7 @@ struct PlaceEditorView: View {
     @State private var isAlwaysVisible = true
     @State private var isCampusPlace = false
     @State private var isLoadingAddress = false
+    @State private var saveError: String?
 
     init(coordinate: CLLocationCoordinate2D, existingPlace: CustomPlace? = nil, defaultIsCampusPlace: Bool = false) {
         self.existingPlace = existingPlace
@@ -93,6 +94,11 @@ struct PlaceEditorView: View {
                     Button("保存") { save() }.disabled(shortName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
+            .alert("地点未保存", isPresented: saveErrorPresented) {
+                Button("好", role: .cancel) { saveError = nil }
+            } message: {
+                Text(saveError ?? "请稍后重试。")
+            }
         }
     }
 
@@ -134,8 +140,15 @@ struct PlaceEditorView: View {
                                             isAlwaysVisible: isAlwaysVisible,
                                             isCampusPlace: isCampusPlace))
         }
-        try? modelContext.save()
-        dismiss()
+        let saved = PersistenceService.save(modelContext, operation: "保存地点") { message in
+            saveError = message
+        }
+        if saved { dismiss() }
+    }
+
+    private var saveErrorPresented: Binding<Bool> {
+        Binding(get: { saveError != nil },
+                set: { if !$0 { saveError = nil } })
     }
 }
 

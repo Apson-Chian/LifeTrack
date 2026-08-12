@@ -210,6 +210,16 @@ struct PhotoSmartOrganizerView: View {
                                 value: snapshot.displayedRecords.isEmpty ? nil : "\(snapshot.displayedRecords.count) 张")
             }
             .disabled(snapshot.displayedRecords.isEmpty)
+
+            NavigationLink {
+                TravelArchiveView()
+            } label: {
+                PhotoFeatureRow(title: "旅行归档建议",
+                                subtitle: "结合照片、轨迹与停留地点识别明显旅行",
+                                symbol: "suitcase.fill",
+                                tint: .teal,
+                                value: "本地识别")
+            }
         }
     }
 
@@ -330,7 +340,7 @@ struct PhotoSmartOrganizerView: View {
         for record in records where !identifiers.contains(record.assetIdentifier) {
             modelContext.delete(record)
         }
-        try? modelContext.save()
+        PersistenceService.save(modelContext, operation: "同步照片缓存")
     }
 
     private func relinkCachedRecords(using descriptors: [PhotoLibraryAssetDescriptor]) async {
@@ -363,7 +373,7 @@ struct PhotoSmartOrganizerView: View {
             record.linkedSessionID = update.linkedSessionID
             didChange = true
         }
-        if didChange { try? modelContext.save() }
+        if didChange { PersistenceService.save(modelContext, operation: "关联照片轨迹") }
     }
 
     private func startAnalysis(_ descriptors: [PhotoLibraryAssetDescriptor]) {
@@ -413,12 +423,12 @@ struct PhotoSmartOrganizerView: View {
                 completedInCurrentRun += 1
 
                 if completedInCurrentRun % 10 == 0 {
-                    try? modelContext.save()
+                    PersistenceService.save(modelContext, operation: "保存照片分析缓存")
                     await yieldForEnergyAndThermals()
                 }
             }
 
-            try? modelContext.save()
+            PersistenceService.save(modelContext, operation: "完成照片分析缓存")
             let wasCancelled = Task.isCancelled
             isAnalyzing = false
             analysisTask = nil

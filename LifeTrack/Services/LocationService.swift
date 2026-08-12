@@ -1,5 +1,6 @@
 import CoreLocation
 import CoreMotion
+import OSLog
 import SwiftData
 
 final class LocationService: NSObject, ObservableObject {
@@ -10,12 +11,28 @@ final class LocationService: NSObject, ObservableObject {
     @Published private(set) var currentActivity: ActivityType = .unknown
     @Published private(set) var activeSession: ActivitySession?
     @Published private(set) var lastError: String?
+    @Published private(set) var lastCriticalError: String?
+    @Published private(set) var recoveryNotice: String?
     @Published var recordingPreference: RecordingPreference = .smart {
         didSet { applySamplingPolicy() }
     }
 
+    var canRecordInForeground: Bool {
+        authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse
+    }
+
+    var hasBackgroundAuthorization: Bool {
+        authorizationStatus == .authorizedAlways
+    }
+
+    var needsBackgroundWarning: Bool {
+        activeSession != nil && !hasBackgroundAuthorization
+    }
+
     private let manager = CLLocationManager()
     private let motionService = MotionActivityService()
+    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "LifeTrack",
+                                category: "Location")
     private weak var modelContext: ModelContext?
     private var lastSavedLocation: CLLocation?
     private var lastDistanceLocation: CLLocation?
@@ -24,6 +41,11 @@ final class LocationService: NSObject, ObservableObject {
     private var currentMotionConfidence: CMMotionActivityConfidence = .low
     private let placeRecognitionService = PlaceRecognitionService()
     private var pendingStay: StayRecord?
+    private var pendingAlwaysRequest = false
+    private var isConfigured = false
+
+    private static let maximumRecoveryGap: TimeInterval = 4 * 60 * 60
+    private static let maximumStayPointGap: TimeInterval = 60 * 60
 
     private override init() {
         authorizationStatus = manager.authorizationStatus
@@ -35,15 +57,39 @@ final class LocationService: NSObject, ObservableObject {
 
     func configure(with context: ModelContext) {
         modelContext = context
-        recordingPreference = RecordingPreference(rawValue: UserDefaults.standard.string(forKey: "recordingPreference") ?? "smart") ?? .smart
+        guard !isConfigured else { return }
+        isConfigured = true
+        recordingPreference = RecordingPreference(
+            rawValue: UserDefaults.standard.string(forKey: "recordingPreference") ?? "smart"
+        ) ?? .smart
         reprocessStoredDataIfNeeded()
+        recoverActiveSessions()
     }
 
+    /// Requests only foreground access. Always access is requested separately after an explicit user action.
     func requestAuthorization() {
+        requestForegroundAuthorization()
+    }
+
+    func requestForegroundAuthorization() {
+        if manager.authorizationStatus == .notDetermined {
+            manager.requestWhenInUseAuthorization()
+        }
+    }
+
+    func requestBackgroundAuthorization() {
         switch manager.authorizationStatus {
-        case .notDetermined: manager.requestWhenInUseAuthorization()
-        case .authorizedWhenInUse: manager.requestAlwaysAuthorization()
-        default: break
+        case .notDetermined:
+            pendingAlwaysRequest = true
+            manager.requestWhenInUseAuthorization()
+        case .authorizedWhenInUse:
+            manager.requestAlwaysAuthorization()
+        case .denied, .restricted:
+            recordError("定位权限已关闭，请在系统设置中允许 LifeTrack 使用定位。", critical: true)
+        case .authorizedAlways:
+            break
+        @unknown default:
+            recordError("无法确认定位授权状态。", critical: false)
         }
     }
 
@@ -54,71 +100,71 @@ final class LocationService: NSObject, ObservableObject {
         case .authorizedAlways, .authorizedWhenInUse:
             manager.requestLocation()
         case .denied, .restricted:
-            lastError = "需要允许定位访问后才能回到当前位置。"
+            recordError("需要允许定位访问后才能回到当前位置。", critical: false)
         @unknown default:
-            lastError = "无法确认定位授权状态。"
+            recordError("无法确认定位授权状态。", critical: false)
         }
     }
 
     func startRecording(manualActivity: ActivityType? = nil) {
+        lastCriticalError = nil
         guard let modelContext else {
-            lastError = "数据存储尚未准备好。"
+            recordError("数据存储尚未准备好。", critical: true)
             return
         }
-        guard manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse else {
-            lastError = "开始记录前需要先允许定位访问。"
-            requestAuthorization()
+        guard canRecordInForeground else {
+            recordError("开始记录前需要先允许定位访问。", critical: true)
+            requestForegroundAuthorization()
             return
         }
         guard activeSession == nil else { return }
 
-        let session = ActivitySession(activityType: manualActivity ?? currentActivity, source: manualActivity == nil ? "automatic" : "manual")
+        // Resolve any persisted active row first so repeated taps cannot create duplicate sessions.
+        if hasPersistedActiveSession() {
+            recoverActiveSessions()
+            guard activeSession == nil else { return }
+        }
+
+        let session = ActivitySession(activityType: manualActivity ?? currentActivity,
+                                      source: manualActivity == nil ? "automatic" : "manual")
         session.manualActivityType = manualActivity
         modelContext.insert(session)
-        try? modelContext.save()
+        guard saveContext(operation: "开始运动记录", critical: true) else {
+            modelContext.delete(session)
+            return
+        }
+
         activeSession = session
+        pendingStay = nil
         lastSavedLocation = nil
         lastDistanceLocation = nil
         pointsSinceLastAnalysis = 0
-        applySamplingPolicy()
-        manager.allowsBackgroundLocationUpdates = manager.authorizationStatus == .authorizedAlways
-        manager.startUpdatingLocation()
-        motionService.startUpdates { [weak self] activity, confidence in
-            self?.handleMotion(activity, confidence: confidence)
-        }
-    }
-
-    func restore(session: ActivitySession) {
-        activeSession = session
-        applyTrajectoryAnalysis(to: session)
-        let orderedPoints = session.trackPoints.sorted(by: { $0.timestamp < $1.timestamp })
-        lastSavedLocation = orderedPoints.last.map(Self.location(for:))
-        lastDistanceLocation = orderedPoints.last(where: \.isUsableForAnalysis).map(Self.location(for:))
-        pointsSinceLastAnalysis = 0
-        currentActivity = session.manualActivityType ?? session.activityType
-        applySamplingPolicy()
-        manager.allowsBackgroundLocationUpdates = manager.authorizationStatus == .authorizedAlways
-        manager.startUpdatingLocation()
-        motionService.startUpdates { [weak self] activity, confidence in
-            self?.handleMotion(activity, confidence: confidence)
-        }
+        startSensors()
     }
 
     func stopRecording() {
         guard let session = activeSession else { return }
+        lastCriticalError = nil
         manager.stopUpdatingLocation()
         motionService.stopUpdates()
-        session.endTime = .now
-        session.duration = session.endTime?.timeIntervalSince(session.startTime) ?? 0
+
+        let end = Date.now
+        session.endTime = end
+        session.duration = max(0, end.timeIntervalSince(session.startTime))
         session.isActive = false
-        finalizePendingStay(at: session.endTime ?? .now)
+        finalizePendingStay(at: end)
         applyTrajectoryAnalysis(to: session)
         rebuildStayRecords(for: session)
-        try? modelContext?.save()
+        let didSave = saveContext(operation: "结束运动记录", critical: true)
+
         activeSession = nil
         lastSavedLocation = nil
         lastDistanceLocation = nil
         pointsSinceLastAnalysis = 0
+        manager.allowsBackgroundLocationUpdates = false
+        if didSave, let modelContext {
+            JourneyGenerationService.refresh(in: modelContext)
+        }
     }
 
     func setManualActivity(_ activity: ActivityType?) {
@@ -127,7 +173,7 @@ final class LocationService: NSObject, ObservableObject {
         if let activity { currentActivity = activity }
         session.activityType = currentActivity
         applySamplingPolicy()
-        try? modelContext?.save()
+        _ = saveContext(operation: "更新活动类型")
     }
 
     func savePreference() {
@@ -135,11 +181,101 @@ final class LocationService: NSObject, ObservableObject {
         applySamplingPolicy()
     }
 
-    private func handleMotion(_ motionActivity: ActivityType, confidence: CMMotionActivityConfidence) {
+    func clearCriticalError() {
+        lastCriticalError = nil
+    }
+
+    private func startSensors() {
+        applySamplingPolicy()
+        manager.allowsBackgroundLocationUpdates = activeSession != nil && hasBackgroundAuthorization
+        manager.startUpdatingLocation()
+        motionService.startUpdates { [weak self] activity, confidence in
+            self?.handleMotion(activity, confidence: confidence)
+        }
+    }
+
+    private func restore(session: ActivitySession) {
+        activeSession = session
+        applyTrajectoryAnalysis(to: session)
+        let orderedPoints = session.trackPoints.sorted(by: { $0.timestamp < $1.timestamp })
+        lastSavedLocation = orderedPoints.last.map(Self.location(for:))
+        lastDistanceLocation = orderedPoints.last(where: \.isUsableForAnalysis).map(Self.location(for:))
+        pointsSinceLastAnalysis = 0
+        currentActivity = session.manualActivityType ?? session.activityType
+        restorePendingStay(for: session, orderedPoints: orderedPoints)
+        _ = saveContext(operation: "恢复运动记录")
+        startSensors()
+    }
+
+    private func recoverActiveSessions(now: Date = .now) {
+        guard let modelContext else { return }
+        do {
+            let descriptor = FetchDescriptor<ActivitySession>(
+                sortBy: [SortDescriptor(\ActivitySession.startTime, order: .reverse)]
+            )
+            let active = try modelContext.fetch(descriptor).filter(\.isActive)
+            guard !active.isEmpty else { return }
+
+            let newest = active[0]
+            let shouldResumeNewest = shouldResume(newest, now: now)
+            var closedCount = 0
+
+            for session in active {
+                if session.id == newest.id && shouldResumeNewest { continue }
+                closeAbandonedSession(session, now: now)
+                closedCount += 1
+            }
+
+            if closedCount > 0 {
+                let detail = shouldResumeNewest
+                    ? "已自动关闭 \(closedCount) 条较旧的异常记录。"
+                    : "检测到长时间中断的记录，已按最后定位点安全结束。"
+                recoveryNotice = detail
+                _ = saveContext(operation: "修复异常运动记录")
+            }
+
+            if shouldResumeNewest {
+                restore(session: newest)
+            }
+        } catch {
+            recordError("恢复未完成的运动记录失败：\(error.localizedDescription)", critical: false)
+            logger.error("Active session recovery failed: \(String(reflecting: error), privacy: .public)")
+        }
+    }
+
+    private func hasPersistedActiveSession() -> Bool {
+        guard let modelContext else { return false }
+        do {
+            return try modelContext.fetch(FetchDescriptor<ActivitySession>()).contains(where: \.isActive)
+        } catch {
+            recordError("检查未完成记录失败：\(error.localizedDescription)", critical: false)
+            return false
+        }
+    }
+
+    private func shouldResume(_ session: ActivitySession, now: Date) -> Bool {
+        let lastActivity = session.trackPoints.map(\.timestamp).max() ?? session.startTime
+        let gap = now.timeIntervalSince(lastActivity)
+        return gap >= -5 * 60 && gap <= Self.maximumRecoveryGap
+    }
+
+    private func closeAbandonedSession(_ session: ActivitySession, now: Date) {
+        let lastPointTime = session.trackPoints.map(\.timestamp).max()
+        let end = min(max(lastPointTime ?? session.startTime, session.startTime), now)
+        session.endTime = end
+        session.duration = max(0, end.timeIntervalSince(session.startTime))
+        session.isActive = false
+        applyTrajectoryAnalysis(to: session)
+        rebuildStayRecords(for: session)
+    }
+
+    private func handleMotion(_ motionActivity: ActivityType,
+                              confidence: CMMotionActivityConfidence) {
         currentMotionConfidence = confidence
         guard activeSession != nil, activeSession?.manualActivityType == nil else { return }
-        // Require a confident, sustained change to prevent low-speed driving or GPS noise from flipping modes.
-        guard confidence != .low, motionActivity != currentActivity, Date.now.timeIntervalSince(lastActivityChange) > 20 else { return }
+        guard confidence != .low,
+              motionActivity != currentActivity,
+              Date.now.timeIntervalSince(lastActivityChange) > 20 else { return }
         currentActivity = motionActivity
         activeSession?.activityType = motionActivity
         lastActivityChange = .now
@@ -147,7 +283,8 @@ final class LocationService: NSObject, ObservableObject {
     }
 
     private func applySamplingPolicy() {
-        let policy = SamplingPolicy.policy(for: activeSession?.manualActivityType ?? currentActivity, preference: recordingPreference)
+        let policy = SamplingPolicy.policy(for: activeSession?.manualActivityType ?? currentActivity,
+                                           preference: recordingPreference)
         manager.desiredAccuracy = policy.desiredAccuracy
         manager.distanceFilter = policy.distanceFilter
     }
@@ -161,10 +298,9 @@ final class LocationService: NSObject, ObservableObject {
 
         if let previous = lastDistanceLocation,
            TrajectoryAnalysisService.isPlausibleLeg(from: previous, to: location) {
-            let delta = location.distance(from: previous)
-            session.distance += delta
+            session.distance += location.distance(from: previous)
         }
-        session.duration = location.timestamp.timeIntervalSince(session.startTime)
+        session.duration = max(0, location.timestamp.timeIntervalSince(session.startTime))
         session.activityType = activity
         let point = TrackPoint(latitude: location.coordinate.latitude,
                                longitude: location.coordinate.longitude,
@@ -184,11 +320,11 @@ final class LocationService: NSObject, ObservableObject {
             pointsSinceLastAnalysis = 0
         }
         updatePlaceRecognition(for: location, session: session)
-        try? modelContext?.save()
+        _ = saveContext(operation: "保存轨迹点")
     }
 
     private func inferredActivity(for location: CLLocation) -> ActivityType {
-        if activeSession?.manualActivityType != nil { return activeSession?.manualActivityType ?? .unknown }
+        if let manual = activeSession?.manualActivityType { return manual }
         if currentMotionConfidence != .low, currentActivity != .unknown { return currentActivity }
         let speed = max(location.speed, 0)
         if speed < 0.7 { return .stationary }
@@ -205,7 +341,9 @@ final class LocationService: NSObject, ObservableObject {
         return true
     }
 
-    private func shouldSave(_ location: CLLocation, after previous: CLLocation?, policy: SamplingPolicy) -> Bool {
+    private func shouldSave(_ location: CLLocation,
+                            after previous: CLLocation?,
+                            policy: SamplingPolicy) -> Bool {
         guard location.horizontalAccuracy <= policy.minimumAccuracy else { return false }
         guard let previous else { return true }
         let time = location.timestamp.timeIntervalSince(previous.timestamp)
@@ -214,7 +352,8 @@ final class LocationService: NSObject, ObservableObject {
         return time >= policy.minimumInterval || distance >= policy.distanceFilter
     }
 
-    private func applyTrajectoryAnalysis(to session: ActivitySession, including pendingPoint: TrackPoint? = nil) {
+    private func applyTrajectoryAnalysis(to session: ActivitySession,
+                                         including pendingPoint: TrackPoint? = nil) {
         var points = session.trackPoints
         if let pendingPoint, !points.contains(where: { $0.id == pendingPoint.id }) {
             points.append(pendingPoint)
@@ -232,8 +371,13 @@ final class LocationService: NSObject, ObservableObject {
 
     private func rebuildStayRecords(for session: ActivitySession) {
         guard let modelContext else { return }
-        let places = (try? modelContext.fetch(FetchDescriptor<CustomPlace>())) ?? []
-        StayDetectionService.rebuildRecords(for: session, places: places, in: modelContext)
+        do {
+            let places = try modelContext.fetch(FetchDescriptor<CustomPlace>())
+            StayDetectionService.rebuildRecords(for: session, places: places, in: modelContext)
+        } catch {
+            recordError("重新计算停留记录失败：\(error.localizedDescription)", critical: false)
+            logger.error("Stay rebuild fetch failed: \(String(reflecting: error), privacy: .public)")
+        }
     }
 
     private func reprocessStoredDataIfNeeded() {
@@ -249,15 +393,18 @@ final class LocationService: NSObject, ObservableObject {
                 applyTrajectoryAnalysis(to: session)
                 StayDetectionService.rebuildRecords(for: session, places: places, in: modelContext)
             }
-            try modelContext.save()
-            UserDefaults.standard.set(currentVersion, forKey: versionKey)
+            if saveContext(operation: "历史轨迹重新分析") {
+                UserDefaults.standard.set(currentVersion, forKey: versionKey)
+            }
         } catch {
-            lastError = "历史轨迹重新分析失败：\(error.localizedDescription)"
+            recordError("历史轨迹重新分析失败：\(error.localizedDescription)", critical: false)
+            logger.error("Stored trajectory reprocessing failed: \(String(reflecting: error), privacy: .public)")
         }
     }
 
     private static func location(for point: TrackPoint) -> CLLocation {
-        CLLocation(coordinate: CLLocationCoordinate2D(latitude: point.latitude, longitude: point.longitude),
+        CLLocation(coordinate: CLLocationCoordinate2D(latitude: point.latitude,
+                                                      longitude: point.longitude),
                    altitude: point.altitude,
                    horizontalAccuracy: point.horizontalAccuracy,
                    verticalAccuracy: -1,
@@ -266,20 +413,36 @@ final class LocationService: NSObject, ObservableObject {
                    timestamp: point.timestamp)
     }
 
-    private func updatePlaceRecognition(for location: CLLocation, session: ActivitySession) {
+    private func updatePlaceRecognition(for location: CLLocation,
+                                        session: ActivitySession) {
         guard let modelContext else { return }
-        let places = (try? modelContext.fetch(FetchDescriptor<CustomPlace>())) ?? []
+        let places: [CustomPlace]
+        do {
+            places = try modelContext.fetch(FetchDescriptor<CustomPlace>())
+        } catch {
+            recordError("读取自定义地点失败：\(error.localizedDescription)", critical: false)
+            return
+        }
         let matchingPlace = placeRecognitionService.matchingPlace(for: location, places: places)
 
         if let pendingStay,
            let currentPlace = places.first(where: { $0.id == pendingStay.customPlaceID }),
            !placeRecognitionService.hasExited(currentPlace, location: location) {
-            pendingStay.duration = location.timestamp.timeIntervalSince(pendingStay.arrivalTime)
+            pendingStay.duration = max(0, location.timestamp.timeIntervalSince(pendingStay.arrivalTime))
             return
         }
 
         finalizePendingStay(at: location.timestamp)
         guard let matchingPlace else { return }
+
+        if let existing = session.stayRecords
+            .filter({ $0.customPlaceID == matchingPlace.id && $0.departureTime == nil })
+            .max(by: { $0.arrivalTime < $1.arrivalTime }) {
+            pendingStay = existing
+            existing.duration = max(0, location.timestamp.timeIntervalSince(existing.arrivalTime))
+            return
+        }
+
         let stay = StayRecord(customPlaceID: matchingPlace.id,
                               detectedName: matchingPlace.shortName,
                               latitude: matchingPlace.latitude,
@@ -290,28 +453,144 @@ final class LocationService: NSObject, ObservableObject {
         pendingStay = stay
     }
 
+    private func restorePendingStay(for session: ActivitySession,
+                                    orderedPoints: [TrackPoint]) {
+        pendingStay = nil
+        guard let modelContext, let latestPoint = orderedPoints.last else { return }
+
+        let places: [CustomPlace]
+        do {
+            places = try modelContext.fetch(FetchDescriptor<CustomPlace>())
+        } catch {
+            recordError("恢复停留状态失败：\(error.localizedDescription)", critical: false)
+            return
+        }
+
+        let latestLocation = Self.location(for: latestPoint)
+        let matchingPlace = placeRecognitionService.matchingPlace(for: latestLocation, places: places)
+
+        for openRecord in session.stayRecords.filter({ $0.departureTime == nil }) {
+            guard let place = places.first(where: { $0.id == openRecord.customPlaceID }),
+                  !placeRecognitionService.hasExited(place, location: latestLocation),
+                  place.id == matchingPlace?.id else {
+                closeRecoveredStay(openRecord, at: latestPoint.timestamp)
+                continue
+            }
+            openRecord.duration = max(0, latestPoint.timestamp.timeIntervalSince(openRecord.arrivalTime))
+            pendingStay = openRecord
+        }
+
+        guard pendingStay == nil, let matchingPlace else { return }
+
+        let arrival = inferredArrivalTime(at: matchingPlace,
+                                          in: orderedPoints,
+                                          endingAt: latestPoint.timestamp)
+        let duplicates = session.stayRecords.contains { record in
+            guard record.customPlaceID == matchingPlace.id else { return false }
+            let end = record.departureTime ?? latestPoint.timestamp
+            return record.arrivalTime <= latestPoint.timestamp && end >= arrival
+        }
+        guard !duplicates else { return }
+
+        let restored = StayRecord(customPlaceID: matchingPlace.id,
+                                  detectedName: matchingPlace.shortName,
+                                  latitude: matchingPlace.latitude,
+                                  longitude: matchingPlace.longitude,
+                                  arrivalTime: arrival,
+                                  session: session)
+        restored.duration = max(0, latestPoint.timestamp.timeIntervalSince(arrival))
+        modelContext.insert(restored)
+        pendingStay = restored
+    }
+
+    private func inferredArrivalTime(at place: CustomPlace,
+                                     in orderedPoints: [TrackPoint],
+                                     endingAt latest: Date) -> Date {
+        var arrival = latest
+        var laterTimestamp = latest
+        let center = CLLocation(latitude: place.latitude, longitude: place.longitude)
+
+        for point in orderedPoints.reversed() {
+            guard laterTimestamp.timeIntervalSince(point.timestamp) <= Self.maximumStayPointGap else { break }
+            let location = Self.location(for: point)
+            guard location.distance(from: center) <= place.radius + 20 else { break }
+            arrival = point.timestamp
+            laterTimestamp = point.timestamp
+        }
+        return arrival
+    }
+
+    private func closeRecoveredStay(_ stay: StayRecord, at departure: Date) {
+        let safeDeparture = max(departure, stay.arrivalTime)
+        stay.departureTime = safeDeparture
+        stay.duration = safeDeparture.timeIntervalSince(stay.arrivalTime)
+        if !placeRecognitionService.isConfirmedStay(from: stay.arrivalTime, to: safeDeparture) {
+            modelContext?.delete(stay)
+        }
+    }
+
     private func finalizePendingStay(at departure: Date) {
         guard let pendingStay else { return }
-        pendingStay.departureTime = departure
-        pendingStay.duration = departure.timeIntervalSince(pendingStay.arrivalTime)
-        // A short pass-through remains in the raw location history but is not a visit.
-        if !placeRecognitionService.isConfirmedStay(from: pendingStay.arrivalTime, to: departure) {
+        let safeDeparture = max(departure, pendingStay.arrivalTime)
+        pendingStay.departureTime = safeDeparture
+        pendingStay.duration = safeDeparture.timeIntervalSince(pendingStay.arrivalTime)
+        if !placeRecognitionService.isConfirmedStay(from: pendingStay.arrivalTime,
+                                                     to: safeDeparture) {
             modelContext?.delete(pendingStay)
         }
         self.pendingStay = nil
+    }
+
+    @discardableResult
+    private func saveContext(operation: String, critical: Bool = false) -> Bool {
+        guard let modelContext else {
+            recordError("\(operation)失败：数据存储尚未准备好。", critical: critical)
+            return false
+        }
+        return PersistenceService.save(modelContext, operation: operation) { [weak self] message in
+            self?.recordError(message, critical: critical)
+        }
+    }
+
+    private func recordError(_ message: String, critical: Bool) {
+        lastError = message
+        if critical { lastCriticalError = message }
+        logger.error("\(message, privacy: .public)")
     }
 }
 
 extension LocationService: CLLocationManagerDelegate {
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         authorizationStatus = manager.authorizationStatus
+        manager.allowsBackgroundLocationUpdates = activeSession != nil &&
+            manager.authorizationStatus == .authorizedAlways
+
+        if pendingAlwaysRequest, manager.authorizationStatus == .authorizedWhenInUse {
+            pendingAlwaysRequest = false
+            manager.requestAlwaysAuthorization()
+        }
+
+        if activeSession != nil {
+            switch manager.authorizationStatus {
+            case .authorizedAlways, .authorizedWhenInUse:
+                manager.startUpdatingLocation()
+            case .denied, .restricted:
+                manager.stopUpdatingLocation()
+                recordError("定位权限已关闭，当前轨迹记录已暂停。请前往系统设置重新授权。", critical: true)
+            case .notDetermined:
+                break
+            @unknown default:
+                break
+            }
+        }
     }
 
-    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+    func locationManager(_ manager: CLLocationManager,
+                         didUpdateLocations locations: [CLLocation]) {
         locations.forEach(process)
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        lastError = error.localizedDescription
+        recordError("定位失败：\(error.localizedDescription)", critical: false)
     }
 }

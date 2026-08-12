@@ -21,7 +21,7 @@ enum TravelTimelineGenerationService {
         }.value
 
         let updatedTripCount = reconcile(drafts: drafts, in: context)
-        try? context.save()
+        PersistenceService.save(context, operation: "保存旅行时间线")
         await resolveMissingPlaceNames(in: context)
 
         return TravelTimelineRefreshSummary(tripCount: drafts.count,
@@ -76,11 +76,11 @@ enum TravelTimelineGenerationService {
             recordByIdentifier[descriptor.id] = record
             analyzedCount += 1
             if analyzedCount % 10 == 0 {
-                try? context.save()
+                PersistenceService.save(context, operation: "保存照片时间线缓存")
                 await Task.yield()
             }
         }
-        try? context.save()
+        PersistenceService.save(context, operation: "完成照片时间线缓存")
         return analyzedCount
     }
 
@@ -201,9 +201,11 @@ enum TravelTimelineGenerationService {
                 }
                 resolvedCount += 1
             }
-            if resolvedCount > 0, resolvedCount % 8 == 0 { try? context.save() }
+            if resolvedCount > 0, resolvedCount % 8 == 0 {
+                PersistenceService.save(context, operation: "保存地点名称缓存")
+            }
         }
-        try? context.save()
+        PersistenceService.save(context, operation: "完成地点名称缓存")
     }
 
     private static func coordinateKey(_ coordinate: CLLocationCoordinate2D) -> String {

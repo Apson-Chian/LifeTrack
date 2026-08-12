@@ -152,12 +152,12 @@ struct PlacesView: View {
     private func delete(at offsets: IndexSet) {
         let values = filteredPlaces
         for index in offsets { modelContext.delete(values[index]) }
-        try? modelContext.save()
+        PersistenceService.save(modelContext, operation: "删除地点")
     }
 
     private func deleteFavorites(at offsets: IndexSet) {
         let values = places.filter(\.isFavorite)
         for index in offsets { modelContext.delete(values[index]) }
-        try? modelContext.save()
+        PersistenceService.save(modelContext, operation: "删除收藏地点")
     }
 }

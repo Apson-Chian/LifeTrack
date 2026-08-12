@@ -1,20 +1,37 @@
 import SwiftUI
+import SwiftData
 import CoreLocation
+import UIKit
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
+    @Environment(\.openURL) private var openURL
+    @Environment(\.modelContext) private var modelContext
     @ObservedObject var locationService: LocationService
     @State private var preference: RecordingPreference = .smart
+    @State private var sharedBackup: SharedFile?
+    @State private var isSelectingBackup = false
+    @State private var backupMessage: String?
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("定位权限") {
                     LabeledContent("状态", value: authorizationDescription)
-                    Button(locationService.authorizationStatus == .notDetermined ? "允许定位访问" : "请求始终允许") {
-                        locationService.requestAuthorization()
+                    if locationService.authorizationStatus == .notDetermined {
+                        Button("允许使用 App 时定位") {
+                            locationService.requestForegroundAuthorization()
+                        }
+                    } else if locationService.authorizationStatus == .authorizedWhenInUse {
+                        Button("允许后台持续记录") {
+                            locationService.requestBackgroundAuthorization()
+                        }
+                    } else if locationService.authorizationStatus == .denied ||
+                                locationService.authorizationStatus == .restricted {
+                        Button("打开系统设置") { openSystemSettings() }
                     }
                     if locationService.authorizationStatus == .authorizedWhenInUse {
-                        Text("始终允许后，正在进行的记录可以在后台继续保存轨迹。")
+                        Text("前台记录仍可使用；进入后台或锁屏后轨迹可能中断。升级为“始终允许”后，进行中的记录才能持续保存。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
@@ -31,6 +48,22 @@ struct SettingsView: View {
                 Section("数据") {
                     Text("LifeTrack 只在本机保存定位点、运动记录、地点和停留信息，不使用账号或服务器。")
                         .font(.footnote)
+                    Button {
+                        createBackup()
+                    } label: {
+                        Label("导出完整本地备份", systemImage: "externaldrive.badge.plus")
+                    }
+                    Button {
+                        isSelectingBackup = true
+                    } label: {
+                        Label("从备份文件恢复", systemImage: "arrow.counterclockwise.icloud")
+                    }
+                    .disabled(locationService.activeSession != nil)
+                    if locationService.activeSession != nil {
+                        Text("请先结束当前轨迹记录，再恢复备份。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 if let lastError = locationService.lastError {
                     Section("定位问题") { Text(lastError).foregroundStyle(.red) }
@@ -38,6 +71,26 @@ struct SettingsView: View {
             }
             .navigationTitle("设置")
             .onAppear { preference = locationService.recordingPreference }
+            .sheet(item: $sharedBackup) { file in
+                ShareSheet(items: [file.url])
+            }
+            .fileImporter(isPresented: $isSelectingBackup,
+                          allowedContentTypes: [.json]) { result in
+                do {
+                    let url = try result.get()
+                    let restored = try BackupService.restoreBackup(at: url, into: modelContext)
+                    backupMessage = restored.totalInserted == 0
+                        ? "备份中的数据均已存在，没有重复导入。"
+                        : "恢复完成：新增 \(restored.insertedSessions) 条轨迹、\(restored.insertedTrackPoints) 个定位点、\(restored.insertedPlaces) 个地点和 \(restored.insertedStays) 条停留记录。"
+                } catch {
+                    backupMessage = error.localizedDescription
+                }
+            }
+            .alert("本地备份", isPresented: backupMessagePresented) {
+                Button("好", role: .cancel) { backupMessage = nil }
+            } message: {
+                Text(backupMessage ?? "")
+            }
         }
     }
 
@@ -58,5 +111,23 @@ struct SettingsView: View {
         case .batterySaver: "使用更少、精度较低的定位点，延长续航。"
         case .precise: "使用高精度和高频率定位点，耗电会更高。"
         }
+    }
+
+    private func openSystemSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        openURL(url)
+    }
+
+    private func createBackup() {
+        do {
+            sharedBackup = SharedFile(url: try BackupService.createBackup(from: modelContext))
+        } catch {
+            backupMessage = "创建备份失败：\(error.localizedDescription)"
+        }
+    }
+
+    private var backupMessagePresented: Binding<Bool> {
+        Binding(get: { backupMessage != nil },
+                set: { if !$0 { backupMessage = nil } })
     }
 }

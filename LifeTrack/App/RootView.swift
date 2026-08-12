@@ -3,9 +3,8 @@ import SwiftData
 
 struct RootView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(filter: #Predicate<ActivitySession> { $0.isActive }) private var activeSessions: [ActivitySession]
     @State private var locationService = LocationService.shared
-    @State private var didRestoreSession = false
+    @State private var didConfigureServices = false
 
     var body: some View {
         TabView {
@@ -22,12 +21,10 @@ struct RootView: View {
                 .tabItem { Label("设置", systemImage: "gearshape") }
         }
         .task {
-            guard !didRestoreSession else { return }
-            didRestoreSession = true
+            guard !didConfigureServices else { return }
+            didConfigureServices = true
             locationService.configure(with: modelContext)
-            if let session = activeSessions.first {
-                locationService.restore(session: session)
-            }
+            JourneyGenerationService.refresh(in: modelContext)
         }
     }
 }

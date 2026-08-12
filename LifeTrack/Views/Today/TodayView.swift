@@ -1,8 +1,10 @@
 import SwiftUI
 import SwiftData
 import CoreLocation
+import UIKit
 
 struct TodayView: View {
+    @Environment(\.openURL) private var openURL
     @ObservedObject var locationService: LocationService
     @Query(sort: \ActivitySession.startTime, order: .reverse) private var sessions: [ActivitySession]
     @Query(sort: \CustomPlace.shortName) private var places: [CustomPlace]
@@ -73,6 +75,15 @@ struct TodayView: View {
                 Button("好", role: .cancel) { }
             } message: {
                 Text("安装高德地图后可开始导航。LifeTrack 会独立保存本地轨迹。")
+            }
+            .alert("操作未完成", isPresented: criticalErrorPresented) {
+                if locationService.authorizationStatus == .denied ||
+                    locationService.authorizationStatus == .restricted {
+                    Button("打开系统设置") { openSystemSettings() }
+                }
+                Button("好", role: .cancel) { locationService.clearCriticalError() }
+            } message: {
+                Text(locationService.lastCriticalError ?? "请稍后重试。")
             }
             .navigationDestination(isPresented: $showTodayTrackDetail) {
                 TodayTrackDetailView(sessions: todaySessions,
@@ -168,8 +179,40 @@ struct TodayView: View {
                 }
                 .buttonStyle(.bordered)
             }
+
+            if locationService.needsBackgroundWarning {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("进入后台或锁屏后轨迹可能中断", systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.orange)
+                    Text("当前只有“使用 App 时”定位权限。前台记录可继续；若需要锁屏后持续记录，请升级为“始终允许”。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("允许后台持续记录") {
+                        locationService.requestBackgroundAuthorization()
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+            }
         }
         .padding(.horizontal)
+    }
+
+    private var criticalErrorPresented: Binding<Bool> {
+        Binding(
+            get: { locationService.lastCriticalError != nil },
+            set: { isPresented in
+                if !isPresented { locationService.clearCriticalError() }
+            }
+        )
+    }
+
+    private func openSystemSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        openURL(url)
     }
 
     private var summary: some View {
