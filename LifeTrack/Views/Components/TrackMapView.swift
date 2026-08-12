@@ -621,12 +621,11 @@ private final class TrackGlowRenderer: MKOverlayRenderer {
         for point in overlay.points {
             let mapPoint = MKMapPoint(point.coordinate)
             guard visible.contains(mapPoint) else { continue }
-            drawSingleDot(at: self.point(for: mapPoint),
-                          radius: 1.65 * renderUnitsPerPoint,
-                          color: UIColor(point.activityType.trackColor),
-                          alpha: 0.82,
-                          shadowBlur: 2.2 * renderUnitsPerPoint,
-                          in: context)
+            drawParticle(at: self.point(for: mapPoint),
+                         radius: 1.65 * renderUnitsPerPoint,
+                         color: UIColor(point.activityType.trackColor),
+                         alpha: 0.82,
+                         in: context)
         }
 
         context.restoreGState()
@@ -652,29 +651,21 @@ private final class TrackGlowRenderer: MKOverlayRenderer {
 
         for cluster in buckets.values {
             let density = min(log2(CGFloat(cluster.count) + 1) / 6, 1)
-            drawSingleDot(at: cluster.center,
-                          radius: 2.4 * renderUnitsPerPoint,
-                          color: color,
-                          alpha: 0.68 + density * 0.26,
-                          shadowBlur: 3 * renderUnitsPerPoint,
-                          in: context)
+            drawParticle(at: cluster.center,
+                         radius: 2.4 * renderUnitsPerPoint,
+                         color: color,
+                         alpha: 0.68 + density * 0.26,
+                         in: context)
         }
     }
 
-    private func drawSingleDot(at point: CGPoint,
-                               radius: CGFloat,
-                               color: UIColor,
-                               alpha: CGFloat,
-                               shadowBlur: CGFloat,
-                               in context: CGContext) {
-        context.saveGState()
-        context.setBlendMode(.plusLighter)
-        context.setShadow(offset: .zero,
-                          blur: shadowBlur,
-                          color: color.withAlphaComponent(alpha * 0.5).cgColor)
+    private func drawParticle(at point: CGPoint,
+                              radius: CGFloat,
+                              color: UIColor,
+                              alpha: CGFloat,
+                              in context: CGContext) {
         context.setFillColor(color.withAlphaComponent(alpha).cgColor)
         context.fillEllipse(in: circleRect(center: point, radius: radius))
-        context.restoreGState()
     }
 
     private func circleRect(center: CGPoint, radius: CGFloat) -> CGRect {

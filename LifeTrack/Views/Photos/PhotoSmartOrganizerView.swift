@@ -18,54 +18,21 @@ struct PhotoSmartOrganizerView: View {
     @State private var statusMessage: String?
     @State private var isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
 
-    private var cachedIdentifiers: Set<String> {
-        Set(records.map(\.assetIdentifier))
-    }
-
-    private var displayedRecords: [PhotoAnalysisRecord] {
-        guard authorizationStatus == .limited, !libraryDescriptors.isEmpty else { return records }
-        let visibleIdentifiers = Set(libraryDescriptors.map(\.id))
-        return records.filter { visibleIdentifiers.contains($0.assetIdentifier) }
-    }
-
-    private var pendingDescriptors: [PhotoLibraryAssetDescriptor] {
-        libraryDescriptors.filter { !cachedIdentifiers.contains($0.id) }
-    }
-
-    private var retryDescriptors: [PhotoLibraryAssetDescriptor] {
-        let unavailableIDs = Set(records.filter { $0.analysisState != .completed }.map(\.assetIdentifier))
-        return libraryDescriptors.filter { unavailableIDs.contains($0.id) }
-    }
-
-    private var descriptorsForNextRun: [PhotoLibraryAssetDescriptor] {
-        pendingDescriptors.isEmpty ? retryDescriptors : pendingDescriptors
-    }
-
-    private var completedRecords: [PhotoAnalysisRecord] {
-        displayedRecords.filter { $0.analysisState == .completed }
-    }
-
-    private var unavailableCount: Int {
-        displayedRecords.filter { $0.analysisState != .completed }.count
-    }
-
-    private var linkedCount: Int {
-        displayedRecords.filter { $0.linkedSessionID != nil }.count
-    }
-
     private var progress: Double {
         guard totalInCurrentRun > 0 else { return 0 }
         return Double(completedInCurrentRun) / Double(totalInCurrentRun)
     }
 
     var body: some View {
+        let snapshot = makeViewSnapshot()
+
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 privacyCard
-                analysisControls
-                overview
-                smartDestinations
-                categoryBrowser
+                analysisControls(snapshot)
+                overview(snapshot)
+                smartDestinations(snapshot)
+                categoryBrowser(snapshot)
             }
             .padding()
         }
@@ -122,11 +89,11 @@ struct PhotoSmartOrganizerView: View {
         )
     }
 
-    private var analysisControls: some View {
+    private func analysisControls(_ snapshot: PhotoOrganizerViewSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(isAnalyzing ? "正在本地整理" : analysisTitle)
+                    Text(isAnalyzing ? "正在本地整理" : analysisTitle(for: snapshot))
                         .font(.headline)
                     Text(analysisSubtitle)
                         .font(.caption)
@@ -153,18 +120,18 @@ struct PhotoSmartOrganizerView: View {
                 }
             } else {
                 Button {
-                    startAnalysis()
+                    startAnalysis(snapshot.descriptorsForNextRun)
                 } label: {
-                    Label(analysisButtonTitle,
-                          systemImage: descriptorsForNextRun.isEmpty ? "checkmark.circle.fill" : "sparkles")
+                    Label(analysisButtonTitle(for: snapshot),
+                          systemImage: snapshot.descriptorsForNextRun.isEmpty ? "checkmark.circle.fill" : "sparkles")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.indigo)
-                .disabled(descriptorsForNextRun.isEmpty || isRefreshing || isLowPowerModeEnabled)
+                .disabled(snapshot.descriptorsForNextRun.isEmpty || isRefreshing || isLowPowerModeEnabled)
             }
 
-            if isLowPowerModeEnabled && !descriptorsForNextRun.isEmpty {
+            if isLowPowerModeEnabled && !snapshot.descriptorsForNextRun.isEmpty {
                 Label("已检测到低电量模式，暂停新的 Vision 分析。",
                       systemImage: "battery.25percent")
                     .font(.caption)
@@ -179,16 +146,18 @@ struct PhotoSmartOrganizerView: View {
         .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
     }
 
-    private var analysisTitle: String {
+    private func analysisTitle(for snapshot: PhotoOrganizerViewSnapshot) -> String {
         if isRefreshing { return "正在读取照片元数据" }
-        if pendingDescriptors.isEmpty, !retryDescriptors.isEmpty { return "\(retryDescriptors.count) 张上次整理未完成" }
-        if descriptorsForNextRun.isEmpty, !libraryDescriptors.isEmpty { return "智能整理已是最新" }
-        return "发现 \(pendingDescriptors.count) 张待整理照片"
+        if snapshot.pendingDescriptors.isEmpty, !snapshot.retryDescriptors.isEmpty {
+            return "\(snapshot.retryDescriptors.count) 张上次整理未完成"
+        }
+        if snapshot.descriptorsForNextRun.isEmpty, !libraryDescriptors.isEmpty { return "智能整理已是最新" }
+        return "发现 \(snapshot.pendingDescriptors.count) 张待整理照片"
     }
 
-    private var analysisButtonTitle: String {
-        if !pendingDescriptors.isEmpty { return "整理 \(pendingDescriptors.count) 张新照片" }
-        if !retryDescriptors.isEmpty { return "重试 \(retryDescriptors.count) 张未完成照片" }
+    private func analysisButtonTitle(for snapshot: PhotoOrganizerViewSnapshot) -> String {
+        if !snapshot.pendingDescriptors.isEmpty { return "整理 \(snapshot.pendingDescriptors.count) 张新照片" }
+        if !snapshot.retryDescriptors.isEmpty { return "重试 \(snapshot.retryDescriptors.count) 张未完成照片" }
         return "已完成整理"
     }
 
@@ -202,34 +171,34 @@ struct PhotoSmartOrganizerView: View {
         }
     }
 
-    private var overview: some View {
+    private func overview(_ snapshot: PhotoOrganizerViewSnapshot) -> some View {
         Grid(horizontalSpacing: 10, verticalSpacing: 10) {
             GridRow {
-                StatisticTile(title: "已缓存", value: "\(displayedRecords.count)", symbol: "externaldrive.fill.badge.checkmark")
-                StatisticTile(title: "已分类", value: "\(completedRecords.count)", symbol: "square.grid.2x2.fill")
+                StatisticTile(title: "已缓存", value: "\(snapshot.displayedRecords.count)", symbol: "externaldrive.fill.badge.checkmark")
+                StatisticTile(title: "已分类", value: "\(snapshot.completedRecords.count)", symbol: "square.grid.2x2.fill")
             }
             GridRow {
-                StatisticTile(title: "关联轨迹", value: "\(linkedCount)", symbol: "point.3.connected.trianglepath.dotted")
-                StatisticTile(title: "待重试", value: "\(unavailableCount)", symbol: "arrow.clockwise.circle")
+                StatisticTile(title: "关联轨迹", value: "\(snapshot.linkedCount)", symbol: "point.3.connected.trianglepath.dotted")
+                StatisticTile(title: "待重试", value: "\(snapshot.unavailableCount)", symbol: "arrow.clockwise.circle")
             }
         }
     }
 
-    private var smartDestinations: some View {
+    private func smartDestinations(_ snapshot: PhotoOrganizerViewSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("智能回忆")
                 .font(.headline)
 
             NavigationLink {
-                SmartTravelAlbumsView(records: completedRecords, sessions: sessions)
+                SmartTravelAlbumsView(records: snapshot.completedRecords, sessions: sessions)
             } label: {
                 PhotoFeatureRow(title: "智能旅行相册",
                                 subtitle: "结合 EXIF 时间、GPS 和运动轨迹自动分组",
                                 symbol: "suitcase.rolling.fill",
                                 tint: .indigo,
-                                value: displayedRecords.isEmpty ? nil : "自动生成")
+                                value: snapshot.displayedRecords.isEmpty ? nil : "自动生成")
             }
-            .disabled(completedRecords.isEmpty)
+            .disabled(snapshot.completedRecords.isEmpty)
 
             NavigationLink {
                 PhotoTravelTimelineView()
@@ -238,34 +207,85 @@ struct PhotoSmartOrganizerView: View {
                                 subtitle: "按拍摄时间还原行程，保留轨迹关联",
                                 symbol: "point.topleft.down.to.point.bottomright.curvepath",
                                 tint: .orange,
-                                value: displayedRecords.isEmpty ? nil : "\(displayedRecords.count) 张")
+                                value: snapshot.displayedRecords.isEmpty ? nil : "\(snapshot.displayedRecords.count) 张")
             }
-            .disabled(displayedRecords.isEmpty)
+            .disabled(snapshot.displayedRecords.isEmpty)
         }
     }
 
-    private var categoryBrowser: some View {
+    private func categoryBrowser(_ snapshot: PhotoOrganizerViewSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("按内容浏览")
                 .font(.headline)
 
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible())], spacing: 10) {
-                ForEach(PhotoSmartCategory.allCases.filter { $0 != .other || categoryCount($0) > 0 }) { category in
+                ForEach(PhotoSmartCategory.allCases.filter { $0 != .other || snapshot.categoryCount($0) > 0 }) { category in
                     NavigationLink {
                         SmartCategoryPhotosView(category: category,
-                                                records: completedRecords.filter { $0.categories.contains(category) })
+                                                records: snapshot.recordsByCategory[category, default: []])
                     } label: {
-                        SmartCategoryCard(category: category, count: categoryCount(category))
+                        SmartCategoryCard(category: category, count: snapshot.categoryCount(category))
                     }
                     .buttonStyle(.plain)
-                    .disabled(categoryCount(category) == 0)
+                    .disabled(snapshot.categoryCount(category) == 0)
                 }
             }
         }
     }
 
-    private func categoryCount(_ category: PhotoSmartCategory) -> Int {
-        completedRecords.filter { $0.categories.contains(category) }.count
+    private func makeViewSnapshot() -> PhotoOrganizerViewSnapshot {
+        let cachedIdentifiers = Set(records.lazy.map(\.assetIdentifier))
+        let unavailableIdentifiers = Set(records.lazy.compactMap { record in
+            record.analysisState == .completed ? nil : record.assetIdentifier
+        })
+
+        let visibleIdentifiers: Set<String>? = {
+            guard authorizationStatus == .limited, !libraryDescriptors.isEmpty else { return nil }
+            return Set(libraryDescriptors.lazy.map(\.id))
+        }()
+
+        var displayedRecords: [PhotoAnalysisRecord] = []
+        var completedRecords: [PhotoAnalysisRecord] = []
+        var recordsByCategory: [PhotoSmartCategory: [PhotoAnalysisRecord]] = [:]
+        var unavailableCount = 0
+        var linkedCount = 0
+
+        displayedRecords.reserveCapacity(records.count)
+        completedRecords.reserveCapacity(records.count)
+        for record in records {
+            if let visibleIdentifiers, !visibleIdentifiers.contains(record.assetIdentifier) { continue }
+            displayedRecords.append(record)
+            if record.linkedSessionID != nil { linkedCount += 1 }
+
+            guard record.analysisState == .completed else {
+                unavailableCount += 1
+                continue
+            }
+            completedRecords.append(record)
+            for category in record.categories {
+                recordsByCategory[category, default: []].append(record)
+            }
+        }
+
+        var pendingDescriptors: [PhotoLibraryAssetDescriptor] = []
+        var retryDescriptors: [PhotoLibraryAssetDescriptor] = []
+        pendingDescriptors.reserveCapacity(libraryDescriptors.count)
+        for descriptor in libraryDescriptors {
+            if !cachedIdentifiers.contains(descriptor.id) {
+                pendingDescriptors.append(descriptor)
+            }
+            if unavailableIdentifiers.contains(descriptor.id) {
+                retryDescriptors.append(descriptor)
+            }
+        }
+
+        return PhotoOrganizerViewSnapshot(displayedRecords: displayedRecords,
+                                          completedRecords: completedRecords,
+                                          pendingDescriptors: pendingDescriptors,
+                                          retryDescriptors: retryDescriptors,
+                                          recordsByCategory: recordsByCategory,
+                                          unavailableCount: unavailableCount,
+                                          linkedCount: linkedCount)
     }
 
     private func refreshLibrary() async {
@@ -285,8 +305,10 @@ struct PhotoSmartOrganizerView: View {
         }.value
         libraryDescriptors = descriptors
         synchronizeCache(with: descriptors, removeMissing: status == .authorized)
-        relinkCachedRecords(using: descriptors)
-        statusMessage = pendingDescriptors.isEmpty
+        await relinkCachedRecords(using: descriptors)
+        let cachedIdentifiers = Set(records.lazy.map(\.assetIdentifier))
+        let hasPendingDescriptors = descriptors.contains { !cachedIdentifiers.contains($0.id) }
+        statusMessage = !hasPendingDescriptors
             ? "已直接读取本地缓存，没有重复分析。"
             : "PhotoKit 只会向分析器交付小尺寸图像，Vision 推理全程在本机完成。"
         isRefreshing = false
@@ -311,47 +333,61 @@ struct PhotoSmartOrganizerView: View {
         try? modelContext.save()
     }
 
-    private func relinkCachedRecords(using descriptors: [PhotoLibraryAssetDescriptor]) {
+    private func relinkCachedRecords(using descriptors: [PhotoLibraryAssetDescriptor]) async {
         let descriptorByID = Dictionary(uniqueKeysWithValues: descriptors.map { ($0.id, $0) })
         let snapshots = PhotoTrackAssociationService.snapshots(from: sessions)
+        let recordSnapshots = records.map(PhotoRecordLinkSnapshot.init)
+        let updates = await Task.detached(priority: .utility) {
+            recordSnapshots.map { record in
+                let linkedID: UUID?
+                if let descriptor = descriptorByID[record.assetIdentifier] {
+                    linkedID = PhotoTrackAssociationService.bestSessionID(for: descriptor, sessions: snapshots)
+                } else {
+                    linkedID = PhotoTrackAssociationService.bestSessionID(date: record.creationDate,
+                                                                           latitude: record.originalLatitude,
+                                                                           longitude: record.originalLongitude,
+                                                                           sessions: snapshots)
+                }
+                return PhotoRecordLinkUpdate(assetIdentifier: record.assetIdentifier,
+                                             linkedSessionID: linkedID)
+            }
+        }.value
+
+        let recordsByIdentifier = records.reduce(into: [String: PhotoAnalysisRecord]()) { result, record in
+            result[record.assetIdentifier] = record
+        }
         var didChange = false
-        for record in records {
-            let linkedID: UUID?
-            if let descriptor = descriptorByID[record.assetIdentifier] {
-                linkedID = PhotoTrackAssociationService.bestSessionID(for: descriptor, sessions: snapshots)
-            } else {
-                linkedID = PhotoTrackAssociationService.bestSessionID(date: record.creationDate,
-                                                                       latitude: record.originalLatitude,
-                                                                       longitude: record.originalLongitude,
-                                                                       sessions: snapshots)
-            }
-            if record.linkedSessionID != linkedID {
-                record.linkedSessionID = linkedID
-                didChange = true
-            }
+        for update in updates {
+            guard let record = recordsByIdentifier[update.assetIdentifier],
+                  record.linkedSessionID != update.linkedSessionID else { continue }
+            record.linkedSessionID = update.linkedSessionID
+            didChange = true
         }
         if didChange { try? modelContext.save() }
     }
 
-    private func startAnalysis() {
+    private func startAnalysis(_ descriptors: [PhotoLibraryAssetDescriptor]) {
         guard !isAnalyzing,
-              !descriptorsForNextRun.isEmpty,
+              !descriptors.isEmpty,
               !isLowPowerModeEnabled else { return }
-        let descriptors = descriptorsForNextRun
         let snapshots = PhotoTrackAssociationService.snapshots(from: sessions)
+        let existingRecordsByIdentifier = records.reduce(into: [String: PhotoAnalysisRecord]()) { result, record in
+            result[record.assetIdentifier] = record
+        }
         totalInCurrentRun = descriptors.count
         completedInCurrentRun = 0
         isAnalyzing = true
         statusMessage = nil
 
         analysisTask = Task {
+            var recordsByIdentifier = existingRecordsByIdentifier
             for descriptor in descriptors {
                 guard !Task.isCancelled else { break }
                 let result = await PhotoVisionAnalysisService.analyze(descriptor)
                 guard !Task.isCancelled else { break }
 
                 let linkedSessionID = PhotoTrackAssociationService.bestSessionID(for: descriptor, sessions: snapshots)
-                if let cached = records.first(where: { $0.assetIdentifier == descriptor.id }) {
+                if let cached = recordsByIdentifier[descriptor.id] {
                     cached.update(categories: result.categories,
                                   topLabels: result.topLabels,
                                   confidence: result.confidence,
@@ -372,6 +408,7 @@ struct PhotoSmartOrganizerView: View {
                                                      state: result.state,
                                                      linkedSessionID: linkedSessionID)
                     modelContext.insert(record)
+                    recordsByIdentifier[descriptor.id] = record
                 }
                 completedInCurrentRun += 1
 
@@ -403,6 +440,43 @@ struct PhotoSmartOrganizerView: View {
             await Task.yield()
         }
     }
+}
+
+private struct PhotoOrganizerViewSnapshot {
+    let displayedRecords: [PhotoAnalysisRecord]
+    let completedRecords: [PhotoAnalysisRecord]
+    let pendingDescriptors: [PhotoLibraryAssetDescriptor]
+    let retryDescriptors: [PhotoLibraryAssetDescriptor]
+    let recordsByCategory: [PhotoSmartCategory: [PhotoAnalysisRecord]]
+    let unavailableCount: Int
+    let linkedCount: Int
+
+    var descriptorsForNextRun: [PhotoLibraryAssetDescriptor] {
+        pendingDescriptors.isEmpty ? retryDescriptors : pendingDescriptors
+    }
+
+    func categoryCount(_ category: PhotoSmartCategory) -> Int {
+        recordsByCategory[category]?.count ?? 0
+    }
+}
+
+private struct PhotoRecordLinkSnapshot: Sendable {
+    let assetIdentifier: String
+    let creationDate: Date
+    let originalLatitude: Double?
+    let originalLongitude: Double?
+
+    init(_ record: PhotoAnalysisRecord) {
+        assetIdentifier = record.assetIdentifier
+        creationDate = record.creationDate
+        originalLatitude = record.originalLatitude
+        originalLongitude = record.originalLongitude
+    }
+}
+
+private struct PhotoRecordLinkUpdate: Sendable {
+    let assetIdentifier: String
+    let linkedSessionID: UUID?
 }
 
 private struct SmartCategoryCard: View {
