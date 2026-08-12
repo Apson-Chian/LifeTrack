@@ -3,6 +3,7 @@ import SwiftData
 
 struct RootView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
     @State private var locationService = LocationService.shared
     @State private var didConfigureServices = false
 
@@ -24,7 +25,11 @@ struct RootView: View {
             guard !didConfigureServices else { return }
             didConfigureServices = true
             locationService.configure(with: modelContext)
-            JourneyGenerationService.refresh(in: modelContext)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .inactive || phase == .background {
+                locationService.flushPendingTrackDataIfNeeded(force: true)
+            }
         }
     }
 }

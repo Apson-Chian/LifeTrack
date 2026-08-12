@@ -153,10 +153,17 @@ struct HistoryView: View {
     }
 
     private func delete(from sessions: [ActivitySession], at offsets: IndexSet) {
-        for index in offsets {
-            modelContext.delete(sessions[index])
+        let targets = offsets.map { sessions[$0] }
+        let deletable = targets.filter { !$0.isActive }
+        if deletable.count != targets.count {
+            importMessage = "进行中的轨迹不能删除，请先结束记录。"
         }
-        PersistenceService.save(modelContext, operation: "删除轨迹")
+        guard !deletable.isEmpty else { return }
+        for session in deletable { modelContext.delete(session) }
+        let saved = PersistenceService.save(modelContext,
+                                            operation: "删除轨迹",
+                                            failureRecovery: .rollback) { importMessage = $0 }
+        if saved { JourneyGenerationService.refresh(in: modelContext) }
     }
 }
 
@@ -398,6 +405,14 @@ struct SessionDetailView: View {
         .navigationTitle(session.activityType.displayName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink {
+                    TrackTrimView(session: session)
+                } label: {
+                    Label("修剪轨迹", systemImage: "slider.horizontal.3")
+                }
+                .disabled(session.isActive || session.trackPoints.count < 3)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     exportGPX()

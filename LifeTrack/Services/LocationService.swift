@@ -3,6 +3,13 @@ import CoreMotion
 import OSLog
 import SwiftData
 
+enum RecordingState: Equatable {
+    case idle
+    case recording
+    case stopping
+    case stopFailed
+}
+
 final class LocationService: NSObject, ObservableObject {
     static let shared = LocationService()
 
@@ -13,6 +20,7 @@ final class LocationService: NSObject, ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var lastCriticalError: String?
     @Published private(set) var recoveryNotice: String?
+    @Published private(set) var recordingState: RecordingState = .idle
     @Published var recordingPreference: RecordingPreference = .smart {
         didSet { applySamplingPolicy() }
     }
@@ -41,11 +49,17 @@ final class LocationService: NSObject, ObservableObject {
     private var currentMotionConfidence: CMMotionActivityConfidence = .low
     private let placeRecognitionService = PlaceRecognitionService()
     private var pendingStay: StayRecord?
+    private var cachedPlaces: [CustomPlace] = []
     private var pendingAlwaysRequest = false
     private var isConfigured = false
+    private var unsavedTrackPointCount = 0
+    private var lastPersistenceDate = Date.distantPast
+    private var hasPendingPersistenceChanges = false
 
     private static let maximumRecoveryGap: TimeInterval = 4 * 60 * 60
     private static let maximumStayPointGap: TimeInterval = 60 * 60
+    private static let maximumUnsavedTrackPointCount = 10
+    private static let maximumPersistenceInterval: TimeInterval = 20
 
     private override init() {
         authorizationStatus = manager.authorizationStatus
@@ -62,6 +76,7 @@ final class LocationService: NSObject, ObservableObject {
         recordingPreference = RecordingPreference(
             rawValue: UserDefaults.standard.string(forKey: "recordingPreference") ?? "smart"
         ) ?? .smart
+        refreshPlaceCache()
         reprocessStoredDataIfNeeded()
         recoverActiveSessions()
     }
@@ -117,7 +132,7 @@ final class LocationService: NSObject, ObservableObject {
             requestForegroundAuthorization()
             return
         }
-        guard activeSession == nil else { return }
+        guard activeSession == nil, recordingState == .idle else { return }
 
         // Resolve any persisted active row first so repeated taps cannot create duplicate sessions.
         if hasPersistedActiveSession() {
@@ -129,22 +144,26 @@ final class LocationService: NSObject, ObservableObject {
                                       source: manualActivity == nil ? "automatic" : "manual")
         session.manualActivityType = manualActivity
         modelContext.insert(session)
-        guard saveContext(operation: "开始运动记录", critical: true) else {
-            modelContext.delete(session)
+        guard saveContext(operation: "开始运动记录",
+                          critical: true,
+                          failureRecovery: .rollback) else {
             return
         }
 
         activeSession = session
+        recordingState = .recording
         pendingStay = nil
         lastSavedLocation = nil
         lastDistanceLocation = nil
         pointsSinceLastAnalysis = 0
+        resetPendingPersistenceState(at: .now)
         startSensors()
     }
 
     func stopRecording() {
-        guard let session = activeSession else { return }
+        guard let session = activeSession, recordingState == .recording else { return }
         lastCriticalError = nil
+        recordingState = .stopping
         manager.stopUpdatingLocation()
         motionService.stopUpdates()
 
@@ -155,15 +174,60 @@ final class LocationService: NSObject, ObservableObject {
         finalizePendingStay(at: end)
         applyTrajectoryAnalysis(to: session)
         rebuildStayRecords(for: session)
-        let didSave = saveContext(operation: "结束运动记录", critical: true)
+        hasPendingPersistenceChanges = true
 
-        activeSession = nil
-        lastSavedLocation = nil
-        lastDistanceLocation = nil
-        pointsSinceLastAnalysis = 0
-        manager.allowsBackgroundLocationUpdates = false
-        if didSave, let modelContext {
-            JourneyGenerationService.refresh(in: modelContext)
+        if saveContext(operation: "结束运动记录", critical: true) {
+            completeSuccessfulStop()
+        } else {
+            recordingState = .stopFailed
+            recordError("结束记录保存失败，请重试。轨迹仍保留在当前会话中。", critical: true)
+        }
+    }
+
+    func retryStopRecording() {
+        guard activeSession != nil, recordingState == .stopFailed else { return }
+        lastCriticalError = nil
+        recordingState = .stopping
+        if saveContext(operation: "重试结束运动记录", critical: true) {
+            completeSuccessfulStop()
+        } else {
+            recordingState = .stopFailed
+            recordError("结束记录保存失败，请重试。轨迹仍保留在当前会话中。", critical: true)
+        }
+    }
+
+    func flushPendingTrackDataIfNeeded(force: Bool) {
+        guard activeSession != nil || hasPendingPersistenceChanges else { return }
+        if recordingState == .stopFailed {
+            if force { retryStopRecording() }
+            return
+        }
+        guard recordingState == .recording else { return }
+
+        let reachedCountLimit = unsavedTrackPointCount >= Self.maximumUnsavedTrackPointCount
+        let reachedTimeLimit = Date.now.timeIntervalSince(lastPersistenceDate) >= Self.maximumPersistenceInterval
+        guard force || reachedCountLimit || reachedTimeLimit else { return }
+
+        if saveContext(operation: force ? "保存待处理轨迹" : "批量保存轨迹点") {
+            resetPendingPersistenceState(at: .now)
+        }
+    }
+
+    func retryPendingPersistence() {
+        if recordingState == .stopFailed {
+            retryStopRecording()
+        } else {
+            flushPendingTrackDataIfNeeded(force: true)
+        }
+    }
+
+    func refreshPlaceCache() {
+        guard let modelContext else { return }
+        do {
+            cachedPlaces = try modelContext.fetch(FetchDescriptor<CustomPlace>())
+        } catch {
+            recordError("刷新地点缓存失败：\(error.localizedDescription)", critical: false)
+            logger.error("Place cache refresh failed: \(String(reflecting: error), privacy: .public)")
         }
     }
 
@@ -173,7 +237,11 @@ final class LocationService: NSObject, ObservableObject {
         if let activity { currentActivity = activity }
         session.activityType = currentActivity
         applySamplingPolicy()
-        _ = saveContext(operation: "更新活动类型")
+        if saveContext(operation: "更新活动类型") {
+            resetPendingPersistenceState(at: .now)
+        } else {
+            hasPendingPersistenceChanges = true
+        }
     }
 
     func savePreference() {
@@ -196,6 +264,7 @@ final class LocationService: NSObject, ObservableObject {
 
     private func restore(session: ActivitySession) {
         activeSession = session
+        recordingState = .recording
         applyTrajectoryAnalysis(to: session)
         let orderedPoints = session.trackPoints.sorted(by: { $0.timestamp < $1.timestamp })
         lastSavedLocation = orderedPoints.last.map(Self.location(for:))
@@ -203,7 +272,10 @@ final class LocationService: NSObject, ObservableObject {
         pointsSinceLastAnalysis = 0
         currentActivity = session.manualActivityType ?? session.activityType
         restorePendingStay(for: session, orderedPoints: orderedPoints)
-        _ = saveContext(operation: "恢复运动记录")
+        hasPendingPersistenceChanges = true
+        if saveContext(operation: "恢复运动记录") {
+            resetPendingPersistenceState(at: .now)
+        }
         startSensors()
     }
 
@@ -211,9 +283,10 @@ final class LocationService: NSObject, ObservableObject {
         guard let modelContext else { return }
         do {
             let descriptor = FetchDescriptor<ActivitySession>(
+                predicate: #Predicate { $0.isActive },
                 sortBy: [SortDescriptor(\ActivitySession.startTime, order: .reverse)]
             )
-            let active = try modelContext.fetch(descriptor).filter(\.isActive)
+            let active = try modelContext.fetch(descriptor)
             guard !active.isEmpty else { return }
 
             let newest = active[0]
@@ -231,7 +304,10 @@ final class LocationService: NSObject, ObservableObject {
                     ? "已自动关闭 \(closedCount) 条较旧的异常记录。"
                     : "检测到长时间中断的记录，已按最后定位点安全结束。"
                 recoveryNotice = detail
-                _ = saveContext(operation: "修复异常运动记录")
+                hasPendingPersistenceChanges = true
+                if saveContext(operation: "修复异常运动记录") {
+                    resetPendingPersistenceState(at: .now)
+                }
             }
 
             if shouldResumeNewest {
@@ -246,7 +322,9 @@ final class LocationService: NSObject, ObservableObject {
     private func hasPersistedActiveSession() -> Bool {
         guard let modelContext else { return false }
         do {
-            return try modelContext.fetch(FetchDescriptor<ActivitySession>()).contains(where: \.isActive)
+            var descriptor = FetchDescriptor<ActivitySession>(predicate: #Predicate { $0.isActive })
+            descriptor.fetchLimit = 1
+            return try !modelContext.fetch(descriptor).isEmpty
         } catch {
             recordError("检查未完成记录失败：\(error.localizedDescription)", critical: false)
             return false
@@ -291,7 +369,9 @@ final class LocationService: NSObject, ObservableObject {
 
     private func process(_ location: CLLocation) {
         currentLocation = location
-        guard let session = activeSession, isValid(location) else { return }
+        guard recordingState == .recording,
+              let session = activeSession,
+              isValid(location) else { return }
         let activity = session.manualActivityType ?? inferredActivity(for: location)
         let policy = SamplingPolicy.policy(for: activity, preference: recordingPreference)
         guard shouldSave(location, after: lastSavedLocation, policy: policy) else { return }
@@ -315,12 +395,14 @@ final class LocationService: NSObject, ObservableObject {
         lastSavedLocation = location
         lastDistanceLocation = location
         pointsSinceLastAnalysis += 1
+        unsavedTrackPointCount += 1
+        hasPendingPersistenceChanges = true
         if pointsSinceLastAnalysis >= 8 {
             applyTrajectoryAnalysis(to: session, including: point)
             pointsSinceLastAnalysis = 0
         }
         updatePlaceRecognition(for: location, session: session)
-        _ = saveContext(operation: "保存轨迹点")
+        flushPendingTrackDataIfNeeded(force: false)
     }
 
     private func inferredActivity(for location: CLLocation) -> ActivityType {
@@ -371,13 +453,7 @@ final class LocationService: NSObject, ObservableObject {
 
     private func rebuildStayRecords(for session: ActivitySession) {
         guard let modelContext else { return }
-        do {
-            let places = try modelContext.fetch(FetchDescriptor<CustomPlace>())
-            StayDetectionService.rebuildRecords(for: session, places: places, in: modelContext)
-        } catch {
-            recordError("重新计算停留记录失败：\(error.localizedDescription)", critical: false)
-            logger.error("Stay rebuild fetch failed: \(String(reflecting: error), privacy: .public)")
-        }
+        StayDetectionService.rebuildRecords(for: session, places: cachedPlaces, in: modelContext)
     }
 
     private func reprocessStoredDataIfNeeded() {
@@ -387,11 +463,10 @@ final class LocationService: NSObject, ObservableObject {
         guard UserDefaults.standard.integer(forKey: versionKey) < currentVersion else { return }
 
         do {
-            let places = try modelContext.fetch(FetchDescriptor<CustomPlace>())
             let sessions = try modelContext.fetch(FetchDescriptor<ActivitySession>())
             for session in sessions where !session.isActive {
                 applyTrajectoryAnalysis(to: session)
-                StayDetectionService.rebuildRecords(for: session, places: places, in: modelContext)
+                StayDetectionService.rebuildRecords(for: session, places: cachedPlaces, in: modelContext)
             }
             if saveContext(operation: "历史轨迹重新分析") {
                 UserDefaults.standard.set(currentVersion, forKey: versionKey)
@@ -416,17 +491,10 @@ final class LocationService: NSObject, ObservableObject {
     private func updatePlaceRecognition(for location: CLLocation,
                                         session: ActivitySession) {
         guard let modelContext else { return }
-        let places: [CustomPlace]
-        do {
-            places = try modelContext.fetch(FetchDescriptor<CustomPlace>())
-        } catch {
-            recordError("读取自定义地点失败：\(error.localizedDescription)", critical: false)
-            return
-        }
-        let matchingPlace = placeRecognitionService.matchingPlace(for: location, places: places)
+        let matchingPlace = placeRecognitionService.matchingPlace(for: location, places: cachedPlaces)
 
         if let pendingStay,
-           let currentPlace = places.first(where: { $0.id == pendingStay.customPlaceID }),
+           let currentPlace = cachedPlaces.first(where: { $0.id == pendingStay.customPlaceID }),
            !placeRecognitionService.hasExited(currentPlace, location: location) {
             pendingStay.duration = max(0, location.timestamp.timeIntervalSince(pendingStay.arrivalTime))
             return
@@ -458,19 +526,11 @@ final class LocationService: NSObject, ObservableObject {
         pendingStay = nil
         guard let modelContext, let latestPoint = orderedPoints.last else { return }
 
-        let places: [CustomPlace]
-        do {
-            places = try modelContext.fetch(FetchDescriptor<CustomPlace>())
-        } catch {
-            recordError("恢复停留状态失败：\(error.localizedDescription)", critical: false)
-            return
-        }
-
         let latestLocation = Self.location(for: latestPoint)
-        let matchingPlace = placeRecognitionService.matchingPlace(for: latestLocation, places: places)
+        let matchingPlace = placeRecognitionService.matchingPlace(for: latestLocation, places: cachedPlaces)
 
         for openRecord in session.stayRecords.filter({ $0.departureTime == nil }) {
-            guard let place = places.first(where: { $0.id == openRecord.customPlaceID }),
+            guard let place = cachedPlaces.first(where: { $0.id == openRecord.customPlaceID }),
                   !placeRecognitionService.hasExited(place, location: latestLocation),
                   place.id == matchingPlace?.id else {
                 closeRecoveredStay(openRecord, at: latestPoint.timestamp)
@@ -541,13 +601,38 @@ final class LocationService: NSObject, ObservableObject {
         self.pendingStay = nil
     }
 
+    private func completeSuccessfulStop() {
+        let context = modelContext
+        activeSession = nil
+        recordingState = .idle
+        pendingStay = nil
+        lastSavedLocation = nil
+        lastDistanceLocation = nil
+        pointsSinceLastAnalysis = 0
+        manager.allowsBackgroundLocationUpdates = false
+        resetPendingPersistenceState(at: .now)
+        if let context {
+            JourneyGenerationService.refresh(in: context)
+        }
+    }
+
+    private func resetPendingPersistenceState(at date: Date) {
+        unsavedTrackPointCount = 0
+        hasPendingPersistenceChanges = false
+        lastPersistenceDate = date
+    }
+
     @discardableResult
-    private func saveContext(operation: String, critical: Bool = false) -> Bool {
+    private func saveContext(operation: String,
+                             critical: Bool = false,
+                             failureRecovery: PersistenceFailureRecovery = .preserveChanges) -> Bool {
         guard let modelContext else {
             recordError("\(operation)失败：数据存储尚未准备好。", critical: critical)
             return false
         }
-        return PersistenceService.save(modelContext, operation: operation) { [weak self] message in
+        return PersistenceService.save(modelContext,
+                                       operation: operation,
+                                       failureRecovery: failureRecovery) { [weak self] message in
             self?.recordError(message, critical: critical)
         }
     }

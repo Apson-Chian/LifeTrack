@@ -77,6 +77,9 @@ struct TodayView: View {
                 Text("安装高德地图后可开始导航。LifeTrack 会独立保存本地轨迹。")
             }
             .alert("操作未完成", isPresented: criticalErrorPresented) {
+                if locationService.recordingState == .stopFailed {
+                    Button("重试保存") { locationService.retryStopRecording() }
+                }
                 if locationService.authorizationStatus == .denied ||
                     locationService.authorizationStatus == .restricted {
                     Button("打开系统设置") { openSystemSettings() }
@@ -166,7 +169,16 @@ struct TodayView: View {
                 Button(manualActivity?.displayName ?? "活动") { showActivityPicker = true }
                     .buttonStyle(.bordered)
             }
-            if locationService.activeSession == nil {
+            if locationService.recordingState == .stopping {
+                ProgressView("正在安全结束记录…")
+                    .frame(maxWidth: .infinity)
+            } else if locationService.recordingState == .stopFailed {
+                Button { locationService.retryStopRecording() } label: {
+                    Label("重试结束保存", systemImage: "arrow.clockwise.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+            } else if locationService.activeSession == nil {
                 Button { locationService.startRecording(manualActivity: manualActivity) } label: {
                     Label("开始记录", systemImage: "record.circle")
                         .frame(maxWidth: .infinity)

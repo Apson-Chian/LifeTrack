@@ -12,6 +12,7 @@ struct SettingsView: View {
     @State private var sharedBackup: SharedFile?
     @State private var isSelectingBackup = false
     @State private var backupMessage: String?
+    @State private var showBackupPrivacyWarning = false
 
     var body: some View {
         NavigationStack {
@@ -48,8 +49,13 @@ struct SettingsView: View {
                 Section("数据") {
                     Text("LifeTrack 只在本机保存定位点、运动记录、地点和停留信息，不使用账号或服务器。")
                         .font(.footnote)
+                    NavigationLink {
+                        DataHealthView()
+                    } label: {
+                        Label("数据健康", systemImage: "checkmark.shield")
+                    }
                     Button {
-                        createBackup()
+                        showBackupPrivacyWarning = true
                     } label: {
                         Label("导出完整本地备份", systemImage: "externaldrive.badge.plus")
                     }
@@ -64,6 +70,13 @@ struct SettingsView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
+                    Text("当前备份文件为本地明文备份，包含完整位置、活动、地点、Journey、旅行归档和照片分析记录。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Section("照片隐私") {
+                    Text("照片内容仅在设备本地进行分析；如果照片仅存储在 iCloud，系统可能从 iCloud 下载缩略图用于本地分析。LifeTrack 不会把原图上传到第三方服务器。")
+                        .font(.footnote)
                 }
                 if let lastError = locationService.lastError {
                     Section("定位问题") { Text(lastError).foregroundStyle(.red) }
@@ -90,6 +103,12 @@ struct SettingsView: View {
                 Button("好", role: .cancel) { backupMessage = nil }
             } message: {
                 Text(backupMessage ?? "")
+            }
+            .alert("备份包含敏感信息", isPresented: $showBackupPrivacyWarning) {
+                Button("取消", role: .cancel) { }
+                Button("继续导出", action: createBackup)
+            } message: {
+                Text("LifeTrack 备份包含完整位置、活动和地点数据，请妥善保管，不要发送给不可信的人。当前备份文件未加密。")
             }
         }
     }

@@ -10,6 +10,7 @@ struct PlacesView: View {
     @State private var searchText = ""
     @State private var draft: PlaceDraft?
     @State private var editingPlace: CustomPlace?
+    @State private var persistenceError: String?
 
     private var filteredPlaces: [CustomPlace] {
         searchText.isEmpty ? places : places.filter { $0.shortName.localizedCaseInsensitiveContains(searchText) || ($0.officialName?.localizedCaseInsensitiveContains(searchText) ?? false) }
@@ -82,6 +83,11 @@ struct PlacesView: View {
                 PlaceEditorView(coordinate: draft.coordinate, defaultIsCampusPlace: draft.isCampusPlace)
             }
             .sheet(item: $editingPlace) { place in PlaceEditorView(coordinate: CLLocationCoordinate2D(latitude: place.latitude, longitude: place.longitude), existingPlace: place) }
+            .alert("地点操作失败", isPresented: persistenceErrorPresented) {
+                Button("好", role: .cancel) { persistenceError = nil }
+            } message: {
+                Text(persistenceError ?? "请稍后重试。")
+            }
         }
     }
 
@@ -152,12 +158,26 @@ struct PlacesView: View {
     private func delete(at offsets: IndexSet) {
         let values = filteredPlaces
         for index in offsets { modelContext.delete(values[index]) }
-        PersistenceService.save(modelContext, operation: "删除地点")
+        savePlaceDeletion(operation: "删除地点")
     }
 
     private func deleteFavorites(at offsets: IndexSet) {
         let values = places.filter(\.isFavorite)
         for index in offsets { modelContext.delete(values[index]) }
-        PersistenceService.save(modelContext, operation: "删除收藏地点")
+        savePlaceDeletion(operation: "删除收藏地点")
+    }
+
+    private func savePlaceDeletion(operation: String) {
+        let saved = PersistenceService.save(modelContext,
+                                            operation: operation,
+                                            failureRecovery: .rollback) {
+            persistenceError = $0
+        }
+        if saved { locationService.refreshPlaceCache() }
+    }
+
+    private var persistenceErrorPresented: Binding<Bool> {
+        Binding(get: { persistenceError != nil },
+                set: { if !$0 { persistenceError = nil } })
     }
 }

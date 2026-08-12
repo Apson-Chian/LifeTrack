@@ -140,10 +140,15 @@ struct PlaceEditorView: View {
                                             isAlwaysVisible: isAlwaysVisible,
                                             isCampusPlace: isCampusPlace))
         }
-        let saved = PersistenceService.save(modelContext, operation: "保存地点") { message in
+        let saved = PersistenceService.save(modelContext,
+                                            operation: "保存地点",
+                                            failureRecovery: .rollback) { message in
             saveError = message
         }
-        if saved { dismiss() }
+        if saved {
+            LocationService.shared.refreshPlaceCache()
+            dismiss()
+        }
     }
 
     private var saveErrorPresented: Binding<Bool> {

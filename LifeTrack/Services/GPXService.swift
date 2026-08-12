@@ -6,6 +6,8 @@ import SwiftData
 enum GPXServiceError: LocalizedError {
     case emptyTrack
     case invalidFile(String)
+    case fileTooLarge
+    case tooManyPoints
     case duplicate
     case persistence
 
@@ -13,6 +15,8 @@ enum GPXServiceError: LocalizedError {
         switch self {
         case .emptyTrack: "GPX 文件中没有可导入的轨迹点。"
         case .invalidFile(let detail): "无法解析 GPX：\(detail)"
+        case .fileTooLarge: "GPX 文件超过 50 MB，无法导入。"
+        case .tooManyPoints: "GPX 轨迹点过多，无法导入。"
         case .duplicate: "这条 GPX 轨迹已经导入过，没有重复创建。"
         case .persistence: "GPX 轨迹已解析，但保存到本地数据库失败。"
         }
@@ -20,6 +24,9 @@ enum GPXServiceError: LocalizedError {
 }
 
 enum GPXService {
+    private static let maximumFileSize = 50 * 1024 * 1024
+    private static let maximumTrackPointCount = 300_000
+
     static func export(session: ActivitySession) throws -> URL {
         let points = session.trackPoints.sorted { $0.timestamp < $1.timestamp }
         guard !points.isEmpty else { throw GPXServiceError.emptyTrack }
@@ -53,13 +60,26 @@ enum GPXService {
             if didAccess { url.stopAccessingSecurityScopedResource() }
         }
 
-        let data = try Data(contentsOf: url)
+        let resourceValues = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey,
+                                                              .contentModificationDateKey])
+        guard resourceValues.isRegularFile != false else {
+            throw GPXServiceError.invalidFile("请选择普通 GPX 文件")
+        }
+        if let fileSize = resourceValues.fileSize, fileSize > maximumFileSize {
+            throw GPXServiceError.fileTooLarge
+        }
+
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        guard data.count <= maximumFileSize else { throw GPXServiceError.fileTooLarge }
         let modificationDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
             .contentModificationDate ?? .now
-        let parserDelegate = GPXParserDelegate(fallbackDate: modificationDate)
+        let parserDelegate = GPXParserDelegate(fallbackDate: modificationDate,
+                                               maximumPointCount: maximumTrackPointCount)
         let parser = XMLParser(data: data)
+        parser.shouldResolveExternalEntities = false
         parser.delegate = parserDelegate
         guard parser.parse() else {
+            if parserDelegate.didExceedPointLimit { throw GPXServiceError.tooManyPoints }
             throw GPXServiceError.invalidFile(parser.parserError?.localizedDescription ?? "文件格式不正确")
         }
 
@@ -67,7 +87,9 @@ enum GPXService {
         guard !points.isEmpty else { throw GPXServiceError.emptyTrack }
         let fingerprint = fingerprint(for: points)
 
-        let existing = try context.fetch(FetchDescriptor<ActivitySession>())
+        let importContext = ModelContext(context.container)
+        importContext.autosaveEnabled = false
+        let existing = try importContext.fetch(FetchDescriptor<ActivitySession>())
         if existing.contains(where: { session in
             if session.importFingerprint == fingerprint { return true }
             guard session.sourceRawValue == "imported_gpx",
@@ -87,7 +109,7 @@ enum GPXService {
         session.endTime = points[points.count - 1].timestamp
         session.duration = max(0, session.endTime!.timeIntervalSince(session.startTime))
         session.isActive = false
-        context.insert(session)
+        importContext.insert(session)
 
         var models: [TrackPoint] = []
         models.reserveCapacity(points.count)
@@ -101,7 +123,7 @@ enum GPXService {
                                    timestamp: point.timestamp,
                                    activityType: .unknown,
                                    session: session)
-            context.insert(model)
+            importContext.insert(model)
             models.append(model)
         }
 
@@ -111,25 +133,28 @@ enum GPXService {
         }
         session.distance = analysis.effectiveDistance
 
-        let places = try context.fetch(FetchDescriptor<CustomPlace>())
-        StayDetectionService.rebuildRecords(for: session, places: places, in: context)
-        guard PersistenceService.save(context, operation: "导入 GPX 轨迹") else {
-            context.delete(session)
+        let places = try importContext.fetch(FetchDescriptor<CustomPlace>())
+        StayDetectionService.rebuildRecords(for: session, places: places, in: importContext)
+        guard PersistenceService.save(importContext,
+                                      operation: "导入 GPX 轨迹",
+                                      failureRecovery: .rollback) else {
             throw GPXServiceError.persistence
         }
-        JourneyGenerationService.refresh(in: context)
+        JourneyGenerationService.refresh(in: importContext)
         return session
     }
 
     private static func fingerprint(for points: [GPXPoint]) -> String {
-        let normalized = points.map {
-            String(format: "%.6f,%.6f,%.1f,%.3f",
-                   $0.latitude,
-                   $0.longitude,
-                   $0.elevation,
-                   $0.timestamp.timeIntervalSince1970)
-        }.joined(separator: "|")
-        let digest = SHA256.hash(data: Data(normalized.utf8))
+        var hasher = SHA256()
+        for point in points {
+            let normalized = String(format: "%.6f,%.6f,%.1f,%.3f|",
+                                    point.latitude,
+                                    point.longitude,
+                                    point.elevation,
+                                    point.timestamp.timeIntervalSince1970)
+            hasher.update(data: Data(normalized.utf8))
+        }
+        let digest = hasher.finalize()
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
@@ -163,17 +188,22 @@ private final class GPXParserDelegate: NSObject, XMLParserDelegate {
         let longitude: Double
         var elevation: Double = 0
         var timestamp: Date?
+        var isInvalid = false
     }
 
     private let fallbackDate: Date
+    private let maximumPointCount: Int
     private let formatter: ISO8601DateFormatter
     private var currentPoint: PendingPoint?
     private var currentElement = ""
     private var currentText = ""
     private(set) var points: [GPXPoint] = []
+    private(set) var didExceedPointLimit = false
 
-    init(fallbackDate: Date) {
-        self.fallbackDate = fallbackDate
+    init(fallbackDate: Date, maximumPointCount: Int) {
+        let referenceTime = fallbackDate.timeIntervalSinceReferenceDate
+        self.fallbackDate = referenceTime.isFinite ? fallbackDate : .now
+        self.maximumPointCount = maximumPointCount
         formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     }
@@ -185,11 +215,15 @@ private final class GPXParserDelegate: NSObject, XMLParserDelegate {
                 attributes attributeDict: [String: String] = [:]) {
         currentElement = elementName.lowercased()
         currentText = ""
-        guard currentElement == "trkpt" || currentElement == "rtept",
+        guard currentElement == "trkpt" || currentElement == "rtept" else { return }
+        currentPoint = nil
+        guard
               let latitudeText = attributeDict["lat"],
               let longitudeText = attributeDict["lon"],
               let latitude = Double(latitudeText),
               let longitude = Double(longitudeText),
+              latitude.isFinite,
+              longitude.isFinite,
               CLLocationCoordinate2DIsValid(CLLocationCoordinate2D(latitude: latitude,
                                                                    longitude: longitude)) else { return }
         currentPoint = PendingPoint(latitude: latitude, longitude: longitude)
@@ -205,17 +239,34 @@ private final class GPXParserDelegate: NSObject, XMLParserDelegate {
                 qualifiedName qName: String?) {
         let element = elementName.lowercased()
         let value = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if element == "ele", let elevation = Double(value) {
-            currentPoint?.elevation = elevation
+        if element == "ele" {
+            if let elevation = Double(value), elevation.isFinite {
+                currentPoint?.elevation = elevation
+            } else {
+                currentPoint?.isInvalid = true
+            }
         } else if element == "time" {
-            currentPoint?.timestamp = parseDate(value)
+            if let timestamp = parseDate(value), Self.isValid(timestamp) {
+                currentPoint?.timestamp = timestamp
+            } else {
+                currentPoint?.isInvalid = true
+            }
         } else if element == "trkpt" || element == "rtept" {
-            if let point = currentPoint {
+            if let point = currentPoint, !point.isInvalid {
+                guard points.count < maximumPointCount else {
+                    didExceedPointLimit = true
+                    parser.abortParsing()
+                    currentPoint = nil
+                    return
+                }
                 let fallback = fallbackDate.addingTimeInterval(Double(points.count))
-                points.append(GPXPoint(latitude: point.latitude,
-                                       longitude: point.longitude,
-                                       elevation: point.elevation,
-                                       timestamp: point.timestamp ?? fallback))
+                let timestamp = point.timestamp ?? fallback
+                if Self.isValid(timestamp) {
+                    points.append(GPXPoint(latitude: point.latitude,
+                                           longitude: point.longitude,
+                                           elevation: point.elevation,
+                                           timestamp: timestamp))
+                }
             }
             currentPoint = nil
         }
@@ -229,5 +280,12 @@ private final class GPXParserDelegate: NSObject, XMLParserDelegate {
         let date = formatter.date(from: value)
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return date
+    }
+
+    private static func isValid(_ date: Date) -> Bool {
+        let value = date.timeIntervalSinceReferenceDate
+        let earliest = Date(timeIntervalSince1970: 0)
+        let latest = Date.now.addingTimeInterval(7 * 24 * 60 * 60)
+        return value.isFinite && date >= earliest && date <= latest
     }
 }

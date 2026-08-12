@@ -10,6 +10,7 @@ struct TravelArchiveView: View {
     @Query private var timelineNodes: [TravelTimelineNode]
     @Query(sort: \TravelArchiveRecord.startTime, order: .reverse) private var archives: [TravelArchiveRecord]
     @State private var editorTarget: TravelArchiveEditorTarget?
+    @State private var deleteError: String?
 
     private var suggestions: [TravelArchiveSuggestion] {
         TravelArchiveDetectionService.suggestions(photos: photos,
@@ -73,11 +74,22 @@ struct TravelArchiveView: View {
         .sheet(item: $editorTarget) { target in
             TravelArchiveEditorView(target: target)
         }
+        .alert("旅行归档未删除", isPresented: deleteErrorPresented) {
+            Button("好", role: .cancel) { deleteError = nil }
+        } message: {
+            Text(deleteError ?? "请稍后重试。")
+        }
     }
 
     private func deleteArchives(at offsets: IndexSet) {
         for index in offsets { modelContext.delete(archives[index]) }
-        PersistenceService.save(modelContext, operation: "删除旅行归档")
+        PersistenceService.save(modelContext,
+                                operation: "删除旅行归档",
+                                failureRecovery: .rollback) { deleteError = $0 }
+    }
+
+    private var deleteErrorPresented: Binding<Bool> {
+        Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })
     }
 }
 
@@ -224,7 +236,9 @@ private struct TravelArchiveEditorView: View {
                                                     totalDistance: target.totalDistance,
                                                     mainPlaces: target.mainPlaces))
         }
-        let saved = PersistenceService.save(modelContext, operation: "保存旅行归档") { saveError = $0 }
+        let saved = PersistenceService.save(modelContext,
+                                            operation: "保存旅行归档",
+                                            failureRecovery: .rollback) { saveError = $0 }
         if saved { dismiss() }
     }
 

@@ -320,7 +320,7 @@ struct PhotoSmartOrganizerView: View {
         let hasPendingDescriptors = descriptors.contains { !cachedIdentifiers.contains($0.id) }
         statusMessage = !hasPendingDescriptors
             ? "已直接读取本地缓存，没有重复分析。"
-            : "PhotoKit 只会向分析器交付小尺寸图像，Vision 推理全程在本机完成。"
+            : "Vision 推理全程在本机完成；如果照片仅存储在 iCloud，系统可能下载小尺寸缩略图用于本地分析。"
         isRefreshing = false
     }
 

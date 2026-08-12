@@ -5,6 +5,7 @@ import SwiftData
 enum BackupServiceError: LocalizedError {
     case unsupportedVersion(Int)
     case invalidFile(String)
+    case fileTooLarge
     case persistence
 
     var errorDescription: String? {
@@ -13,6 +14,8 @@ enum BackupServiceError: LocalizedError {
             "此备份使用版本 \(version)，当前 LifeTrack 仅支持版本 \(LifeTrackBackup.currentVersion)。"
         case .invalidFile(let detail):
             "备份文件无效：\(detail)"
+        case .fileTooLarge:
+            "备份文件超过 200 MB，无法恢复。"
         case .persistence:
             "备份已读取，但部分数据无法保存。请保留原文件并稍后重试。"
         }
@@ -33,6 +36,18 @@ struct BackupRestoreResult {
 
 @MainActor
 enum BackupService {
+    static let lastBackupDateKey = "lastSuccessfulBackupDate"
+    private static let maximumFileSize = 200 * 1024 * 1024
+    private static let maximumSessionCount = 250_000
+    private static let maximumTrackPointCount = 2_000_000
+    private static let maximumPlaceCount = 100_000
+    private static let maximumStayCount = 1_000_000
+    private static let maximumOtherRecordCount = 1_000_000
+
+    static var lastBackupDate: Date? {
+        UserDefaults.standard.object(forKey: lastBackupDateKey) as? Date
+    }
+
     static func createBackup(from context: ModelContext) throws -> URL {
         let backup = LifeTrackBackup(
             backupVersion: LifeTrackBackup.currentVersion,
@@ -57,16 +72,26 @@ enum BackupService {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("LifeTrack-Backup-\(fileDate(.now)).lifetrackbackup.json")
         try data.write(to: url, options: .atomic)
+        UserDefaults.standard.set(Date.now, forKey: lastBackupDateKey)
         return url
     }
 
-    static func restoreBackup(at url: URL, into context: ModelContext) throws -> BackupRestoreResult {
+    static func restoreBackup(at url: URL, into destinationContext: ModelContext) throws -> BackupRestoreResult {
         let didAccess = url.startAccessingSecurityScopedResource()
         defer {
             if didAccess { url.stopAccessingSecurityScopedResource() }
         }
 
-        let data = try Data(contentsOf: url)
+        let resourceValues = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        guard resourceValues.isRegularFile != false else {
+            throw BackupServiceError.invalidFile("请选择普通备份文件")
+        }
+        if let fileSize = resourceValues.fileSize, fileSize > maximumFileSize {
+            throw BackupServiceError.fileTooLarge
+        }
+
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        guard data.count <= maximumFileSize else { throw BackupServiceError.fileTooLarge }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let backup: LifeTrackBackup
@@ -78,6 +103,10 @@ enum BackupService {
         guard backup.backupVersion == LifeTrackBackup.currentVersion else {
             throw BackupServiceError.unsupportedVersion(backup.backupVersion)
         }
+        try validate(backup)
+
+        let context = ModelContext(destinationContext.container)
+        context.autosaveEnabled = false
 
         var insertedSessions = 0
         var insertedTrackPoints = 0
@@ -305,15 +334,233 @@ enum BackupService {
             insertedOtherRecords += 1
         }
 
-        guard PersistenceService.save(context, operation: "恢复 LifeTrack 备份") else {
+        guard PersistenceService.save(context,
+                                      operation: "恢复 LifeTrack 备份",
+                                      failureRecovery: .rollback) else {
             throw BackupServiceError.persistence
         }
         JourneyGenerationService.refresh(in: context)
+        LocationService.shared.refreshPlaceCache()
         return BackupRestoreResult(insertedSessions: insertedSessions,
                                    insertedTrackPoints: insertedTrackPoints,
                                    insertedPlaces: insertedPlaces,
                                    insertedStays: insertedStays,
                                    insertedOtherRecords: insertedOtherRecords)
+    }
+
+    private static func validate(_ backup: LifeTrackBackup) throws {
+        guard backup.sessions.count <= maximumSessionCount else {
+            throw BackupServiceError.invalidFile("运动记录数量超过安全上限")
+        }
+        guard backup.trackPoints.count <= maximumTrackPointCount else {
+            throw BackupServiceError.invalidFile("轨迹点数量超过安全上限")
+        }
+        guard backup.places.count <= maximumPlaceCount else {
+            throw BackupServiceError.invalidFile("地点数量超过安全上限")
+        }
+        guard backup.stays.count <= maximumStayCount else {
+            throw BackupServiceError.invalidFile("停留记录数量超过安全上限")
+        }
+        let otherCount = backup.dailySummaries.count + backup.photoRecords.count +
+            backup.timelineTrips.count + backup.timelineNodes.count +
+            (backup.journeys?.count ?? 0) + (backup.travelArchives?.count ?? 0)
+        guard otherCount <= maximumOtherRecordCount else {
+            throw BackupServiceError.invalidFile("其他记录数量超过安全上限")
+        }
+
+        try requireUnique(backup.sessions.map(\.id), name: "ActivitySession UUID")
+        try requireUnique(backup.trackPoints.map(\.id), name: "TrackPoint UUID")
+        try requireUnique(backup.places.map(\.id), name: "CustomPlace UUID")
+        try requireUnique(backup.stays.map(\.id), name: "StayRecord UUID")
+        try requireUnique(backup.dailySummaries.map(\.id), name: "DailySummary UUID")
+        try requireUnique(backup.photoRecords.map(\.assetIdentifier), name: "照片标识")
+        try requireUnique(backup.timelineTrips.map(\.id), name: "TravelTimelineTrip UUID")
+        try requireUnique(backup.timelineNodes.map(\.id), name: "TravelTimelineNode UUID")
+        try requireUnique((backup.journeys ?? []).map(\.id), name: "JourneyRecord UUID")
+        try requireUnique((backup.travelArchives ?? []).map(\.id), name: "TravelArchive UUID")
+
+        let sessionIDs = Set(backup.sessions.map(\.id))
+        let stayIDs = Set(backup.stays.map(\.id))
+        let tripIDs = Set(backup.timelineTrips.map(\.id))
+
+        for value in backup.sessions {
+            try requireValidDate(value.startTime, field: "运动开始时间")
+            if let end = value.endTime {
+                try requireValidDate(end, field: "运动结束时间")
+                guard end >= value.startTime else {
+                    throw BackupServiceError.invalidFile("运动结束时间早于开始时间")
+                }
+            }
+            try requireNonnegative(value.distance, field: "运动距离")
+            try requireNonnegative(value.duration, field: "运动时长")
+            try requireOptionalCoordinate(latitude: value.destinationLatitude,
+                                          longitude: value.destinationLongitude,
+                                          field: "目的地坐标")
+        }
+
+        for value in backup.trackPoints {
+            try requireCoordinate(latitude: value.latitude, longitude: value.longitude, field: "轨迹点坐标")
+            guard value.altitude.isFinite, value.speed.isFinite, value.course.isFinite,
+                  value.horizontalAccuracy.isFinite, value.horizontalAccuracy >= 0 else {
+                throw BackupServiceError.invalidFile("轨迹点包含 NaN、Infinity 或非法精度")
+            }
+            try requireValidDate(value.timestamp, field: "轨迹点时间")
+            guard let sessionID = value.sessionID, sessionIDs.contains(sessionID) else {
+                throw BackupServiceError.invalidFile("轨迹点关联了不存在的运动记录")
+            }
+        }
+
+        for value in backup.places {
+            try requireCoordinate(latitude: value.latitude, longitude: value.longitude, field: "地点坐标")
+            guard value.radius.isFinite, value.radius > 0 else {
+                throw BackupServiceError.invalidFile("地点半径无效")
+            }
+            try requireValidDate(value.createdAt, field: "地点创建时间")
+            try requireValidDate(value.updatedAt, field: "地点更新时间")
+        }
+
+        for value in backup.stays {
+            try requireCoordinate(latitude: value.latitude, longitude: value.longitude, field: "停留坐标")
+            try requireValidDate(value.arrivalTime, field: "到达时间")
+            if let departure = value.departureTime {
+                try requireValidDate(departure, field: "离开时间")
+                guard departure >= value.arrivalTime else {
+                    throw BackupServiceError.invalidFile("停留离开时间早于到达时间")
+                }
+            }
+            try requireNonnegative(value.duration, field: "停留时长")
+            try requireNonnegative(value.radius, field: "停留半径")
+            guard value.pointCount >= 0, value.confidence.isFinite,
+                  (0...1).contains(value.confidence) else {
+                throw BackupServiceError.invalidFile("停留统计数值无效")
+            }
+            guard let sessionID = value.sessionID, sessionIDs.contains(sessionID) else {
+                throw BackupServiceError.invalidFile("停留记录关联了不存在的运动记录")
+            }
+        }
+
+        for value in backup.dailySummaries {
+            try requireValidDate(value.date, field: "每日汇总日期")
+            for (number, field) in [(value.totalDistance, "每日总距离"),
+                                    (value.walkingDistance, "步行距离"),
+                                    (value.runningDistance, "跑步距离"),
+                                    (value.cyclingDistance, "骑行距离"),
+                                    (value.automotiveDistance, "驾车距离"),
+                                    (value.activeDuration, "活动时长")] {
+                try requireNonnegative(number, field: field)
+            }
+            guard value.stayCount >= 0 else {
+                throw BackupServiceError.invalidFile("每日停留次数无效")
+            }
+        }
+
+        for value in backup.photoRecords {
+            try requireValidDate(value.creationDate, field: "照片创建时间")
+            try requireValidDate(value.analyzedAt, field: "照片分析时间")
+            try requireOptionalCoordinate(latitude: value.latitude, longitude: value.longitude, field: "照片坐标")
+            try requireOptionalCoordinate(latitude: value.originalLatitude,
+                                          longitude: value.originalLongitude,
+                                          field: "照片原始坐标")
+            guard value.confidence.isFinite, (0...1).contains(value.confidence), value.faceCount >= 0 else {
+                throw BackupServiceError.invalidFile("照片分析数值无效")
+            }
+            if let linkedSessionID = value.linkedSessionID, !sessionIDs.contains(linkedSessionID) {
+                throw BackupServiceError.invalidFile("照片关联了不存在的运动记录")
+            }
+        }
+
+        for value in backup.timelineTrips {
+            try requireTimeRange(start: value.startTime, end: value.endTime, field: "旅行时间轴")
+            try requireNonnegative(value.totalDistance, field: "旅行时间轴距离")
+            let route: [TravelTimelineRoutePoint]
+            do {
+                route = try JSONDecoder().decode([TravelTimelineRoutePoint].self, from: value.routeData)
+            } catch {
+                throw BackupServiceError.invalidFile("时间轴路线数据无法解析")
+            }
+            for point in route {
+                try requireCoordinate(latitude: point.latitude, longitude: point.longitude, field: "时间轴路线坐标")
+                try requireValidDate(point.timestamp, field: "时间轴路线时间")
+            }
+        }
+
+        for value in backup.timelineNodes {
+            try requireTimeRange(start: value.startTime, end: value.endTime, field: "时间轴节点")
+            try requireCoordinate(latitude: value.latitude, longitude: value.longitude, field: "时间轴节点坐标")
+            try requireOptionalCoordinate(latitude: value.endLatitude,
+                                          longitude: value.endLongitude,
+                                          field: "时间轴节点结束坐标")
+            try requireNonnegative(value.distance, field: "时间轴节点距离")
+            guard let tripID = value.tripID, tripIDs.contains(tripID) else {
+                throw BackupServiceError.invalidFile("时间轴节点关联了不存在的旅行")
+            }
+        }
+
+        for value in backup.journeys ?? [] {
+            try requireTimeRange(start: value.startTime, end: value.endTime, field: "Journey")
+            try requireNonnegative(value.totalDistance, field: "Journey 距离")
+            guard !value.sessionIDs.isEmpty,
+                  value.sessionIDs.allSatisfy(sessionIDs.contains),
+                  value.stayRecordIDs.allSatisfy(stayIDs.contains) else {
+                throw BackupServiceError.invalidFile("Journey 关联 ID 不完整")
+            }
+        }
+
+        for value in backup.travelArchives ?? [] {
+            try requireTimeRange(start: value.startTime, end: value.endTime, field: "旅行归档")
+            try requireNonnegative(value.totalDistance, field: "旅行归档距离")
+            guard value.photoCount >= 0, value.placeCount >= 0 else {
+                throw BackupServiceError.invalidFile("旅行归档计数无效")
+            }
+            try requireValidDate(value.createdAt, field: "归档创建时间")
+            try requireValidDate(value.updatedAt, field: "归档更新时间")
+        }
+    }
+
+    private static func requireUnique<T: Hashable>(_ values: [T], name: String) throws {
+        guard Set(values).count == values.count else {
+            throw BackupServiceError.invalidFile("\(name) 存在重复")
+        }
+    }
+
+    private static func requireCoordinate(latitude: Double, longitude: Double, field: String) throws {
+        guard latitude.isFinite, longitude.isFinite,
+              CLLocationCoordinate2DIsValid(CLLocationCoordinate2D(latitude: latitude, longitude: longitude)) else {
+            throw BackupServiceError.invalidFile("\(field)无效")
+        }
+    }
+
+    private static func requireOptionalCoordinate(latitude: Double?,
+                                                  longitude: Double?,
+                                                  field: String) throws {
+        switch (latitude, longitude) {
+        case (nil, nil):
+            return
+        case let (latitude?, longitude?):
+            try requireCoordinate(latitude: latitude, longitude: longitude, field: field)
+        default:
+            throw BackupServiceError.invalidFile("\(field)不完整")
+        }
+    }
+
+    private static func requireNonnegative(_ value: Double, field: String) throws {
+        guard value.isFinite, value >= 0 else {
+            throw BackupServiceError.invalidFile("\(field)包含负数、NaN 或 Infinity")
+        }
+    }
+
+    private static func requireValidDate(_ value: Date, field: String) throws {
+        guard value.timeIntervalSinceReferenceDate.isFinite else {
+            throw BackupServiceError.invalidFile("\(field)无效")
+        }
+    }
+
+    private static func requireTimeRange(start: Date, end: Date, field: String) throws {
+        try requireValidDate(start, field: "\(field)开始时间")
+        try requireValidDate(end, field: "\(field)结束时间")
+        guard end >= start else {
+            throw BackupServiceError.invalidFile("\(field)结束时间早于开始时间")
+        }
     }
 
     private static func fileDate(_ date: Date) -> String {
