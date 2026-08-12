@@ -14,11 +14,12 @@ final class CustomPlace {
     var symbolName: String
     var isFavorite: Bool
     var isAlwaysVisible: Bool
+    var isCampusPlace: Bool = false
     var priority: Int
     var createdAt: Date
     var updatedAt: Date
 
-    init(shortName: String, officialName: String? = nil, note: String? = nil, latitude: Double, longitude: Double, radius: Double = 50, category: PlaceCategory = .other, symbolName: String = "mappin.circle.fill", isFavorite: Bool = false, isAlwaysVisible: Bool = true, priority: Int = 0) {
+    init(shortName: String, officialName: String? = nil, note: String? = nil, latitude: Double, longitude: Double, radius: Double = 50, category: PlaceCategory = .other, symbolName: String = "mappin.circle.fill", isFavorite: Bool = false, isAlwaysVisible: Bool = true, isCampusPlace: Bool = false, priority: Int = 0) {
         self.id = UUID()
         self.shortName = shortName
         self.officialName = officialName
@@ -30,6 +31,7 @@ final class CustomPlace {
         self.symbolName = symbolName
         self.isFavorite = isFavorite
         self.isAlwaysVisible = isAlwaysVisible
+        self.isCampusPlace = isCampusPlace
         self.priority = priority
         self.createdAt = .now
         self.updatedAt = .now
@@ -41,7 +43,16 @@ final class CustomPlace {
 enum PlaceCategory: String, CaseIterable, Identifiable {
     case accommodation, study, dining, exercise, transport, other
     var id: String { rawValue }
-    var displayName: String { rawValue.capitalized }
+    var displayName: String {
+        switch self {
+        case .accommodation: "宿舍住宿"
+        case .study: "学习教学"
+        case .dining: "食堂餐饮"
+        case .exercise: "运动健身"
+        case .transport: "交通出行"
+        case .other: "其他地点"
+        }
+    }
     var defaultSymbol: String {
         switch self {
         case .accommodation: "house.fill"

@@ -3,55 +3,115 @@ import Photos
 import CoreLocation
 
 struct PhotoTrackView: View {
+    @State private var photoAssets: [PhotoAssetRecord] = []
     @State private var photoPoints: [PhotoLocationPoint] = []
+    @State private var mapPoints: [TrackMapPoint] = []
+    @State private var photoMemory = PhotoMemorySummary(points: [])
     @State private var scannedPhotoCount = 0
     @State private var isLoading = false
+    @State private var hasLoadedPhotoLocations = false
     @State private var authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @State private var cameraRequest: MapCameraRequest?
+    @State private var timelineScope: PhotoTimelineScope = .all
 
-    private var mapPoints: [TrackMapPoint] {
-        photoPoints.map {
-            TrackMapPoint(coordinate: $0.coordinate,
-                          timestamp: $0.date,
-                          activityType: .unknown,
-                          segmentID: 0,
-                          horizontalAccuracy: 1,
-                          source: .photo)
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                photoTrackMap
+                timelineScopePicker
+                photoFeatures
+                controls
+                stats
+                lifeOverview
+            }
+            .padding(.vertical)
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Task { await loadPhotoLocations() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .disabled(isLoading)
+                .accessibilityLabel("重新扫描照片")
+            }
+        }
+        .task {
+            guard !hasLoadedPhotoLocations else { return }
+            hasLoadedPhotoLocations = true
+            await loadPhotoLocations()
+        }
+        .onChange(of: timelineScope) { _, scope in
+            Task { await applyTimelineScope(scope) }
         }
     }
 
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 16) {
-                    photoTrackMap
-                    controls
-                    stats
-                    pointList
-                }
-                .padding(.vertical)
+    private var photoFeatures: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("照片功能")
+                .font(.headline)
+
+            NavigationLink {
+                PhotoSmartOrganizerView()
+            } label: {
+                PhotoFeatureRow(title: "照片智能整理",
+                                subtitle: "Vision 本地分类 · SwiftData 缓存 · 轨迹关联",
+                                symbol: "sparkles.rectangle.stack.fill",
+                                tint: .indigo,
+                                value: "隐私分析")
             }
-            .navigationTitle("照片轨迹")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        Task { await loadPhotoLocations() }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .disabled(isLoading)
-                    .accessibilityLabel("重新扫描照片")
-                }
+
+            NavigationLink {
+                PhotoPlacesView(points: photoPoints)
+            } label: {
+                PhotoFeatureRow(title: "地点相册",
+                                subtitle: "按拍摄地点分类，在地图上查看照片",
+                                symbol: "map.fill",
+                                tint: .blue,
+                                value: photoPoints.isEmpty ? nil : "\(PhotoLocationGroup.build(from: photoPoints).count) 个地点")
             }
-            .task {
-                await loadPhotoLocations()
+            .disabled(photoPoints.isEmpty)
+
+            HStack(spacing: 10) {
+                NavigationLink {
+                    PhotoFootprintView(points: photoPoints)
+                } label: {
+                    PhotoFeatureTile(title: "足迹图",
+                                     subtitle: photoPoints.isEmpty ? "暂无定位照片" : "\(photoPoints.count) 个足迹",
+                                     symbol: "shoeprints.fill",
+                                     tint: .teal)
+                }
+                .disabled(photoPoints.isEmpty)
+
+                NavigationLink {
+                    PhotoTravelTimelineView()
+                } label: {
+                    PhotoFeatureTile(title: "旅行时间轴",
+                                     subtitle: photoAssets.isEmpty ? "暂无可用照片" : "\(photoAssets.count) 张照片",
+                                     symbol: "point.topleft.down.to.point.bottomright.curvepath",
+                                     tint: .orange)
+                }
+                .disabled(photoAssets.isEmpty)
             }
         }
+        .padding(.horizontal)
+    }
+
+    private var timelineScopePicker: some View {
+        Picker("时间范围", selection: $timelineScope) {
+            ForEach(PhotoTimelineScope.allCases) { scope in
+                Text(scope.title).tag(scope)
+            }
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal)
+        .disabled(isLoading || photoPoints.isEmpty)
     }
 
     private var photoTrackMap: some View {
         ZStack {
-            if mapPoints.count > 1 {
+            if !mapPoints.isEmpty {
                 TrackMapView(points: mapPoints,
                              places: [],
                              currentLocation: nil,
@@ -76,7 +136,7 @@ struct PhotoTrackView: View {
                     .accessibilityLabel("适配全部照片轨迹")
                 }
             } else {
-                ContentUnavailableView(emptyTitle, systemImage: "photo.badge.map", description: Text(emptyDescription))
+                ContentUnavailableView(emptyTitle, systemImage: "photo.on.rectangle.angled", description: Text(emptyDescription))
                     .frame(maxWidth: .infinity, minHeight: 320)
                     .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
             }
@@ -96,8 +156,12 @@ struct PhotoTrackView: View {
             .disabled(isLoading)
 
             Button {
+                photoAssets = []
                 photoPoints = []
+                mapPoints = []
+                photoMemory = PhotoMemorySummary(points: [])
                 scannedPhotoCount = 0
+                cameraRequest = nil
             } label: {
                 Label("清空", systemImage: "trash")
                     .frame(maxWidth: .infinity)
@@ -115,50 +179,61 @@ struct PhotoTrackView: View {
                 StatisticTile(title: "扫描照片", value: "\(scannedPhotoCount)", symbol: "photo")
             }
             GridRow {
-                StatisticTile(title: "已跳过", value: "\(max(scannedPhotoCount - photoPoints.count, 0))", symbol: "photo.badge.exclamationmark")
+                StatisticTile(title: "无定位", value: "\(max(scannedPhotoCount - photoPoints.count, 0))", symbol: "photo.badge.exclamationmark")
                 StatisticTile(title: "状态", value: statusText, symbol: "checkmark.circle")
             }
             GridRow {
                 StatisticTile(title: "地图校正", value: "国内", symbol: "scope")
-                StatisticTile(title: "显示方式", value: "聚合点", symbol: "sparkles")
+                StatisticTile(title: "显示方式", value: "光粒子", symbol: "sparkles")
             }
         }
         .padding(.horizontal)
     }
 
-    private var pointList: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("定位点").font(.headline)
-            if photoPoints.isEmpty {
-                Text("没有读取到照片定位点。")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
-            } else {
-                ForEach(Array(photoPoints.prefix(80).enumerated()), id: \.element.id) { index, point in
-                    HStack(spacing: 10) {
-                        Text("\(index + 1)")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 24, height: 24)
-                            .background(Color.blue, in: Circle())
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(point.date, format: .dateTime.year().month().day().hour().minute())
-                                .font(.subheadline.weight(.semibold))
-                            Text(String(format: "%.5f, %.5f", point.coordinate.latitude, point.coordinate.longitude))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                    }
-                    .padding(12)
-                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+    private var lifeOverview: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("生活回顾").font(.headline)
+            Grid(horizontalSpacing: 10, verticalSpacing: 10) {
+                GridRow {
+                    StatisticTile(title: "活跃天数", value: "\(photoMemory.activeDayCount)", symbol: "calendar")
+                    StatisticTile(title: "时间跨度", value: photoMemory.dateSpanText, symbol: "clock.arrow.circlepath")
                 }
-                if photoPoints.count > 80 {
-                    Text("已显示前 80 个定位点，地图包含全部点。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                GridRow {
+                    StatisticTile(title: "高频月份", value: photoMemory.busiestMonthText, symbol: "calendar.badge.clock")
+                    StatisticTile(title: "热点区域", value: "\(photoMemory.hotspots.count)", symbol: "circle.hexagongrid")
+                }
+            }
+
+            if !photoMemory.hotspots.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("常出现的位置").font(.subheadline.weight(.semibold))
+                    ForEach(Array(photoMemory.hotspots.prefix(4).enumerated()), id: \.element.id) { index, hotspot in
+                        Button {
+                            cameraRequest = MapCameraRequest(target: .coordinate(lat: hotspot.center.latitude, lon: hotspot.center.longitude))
+                        } label: {
+                            HStack(spacing: 10) {
+                                Text("\(index + 1)")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 24, height: 24)
+                                    .background(Color.teal, in: Circle())
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(hotspot.count) 张照片")
+                                        .font(.subheadline.weight(.semibold))
+                                    Text(hotspot.dateRangeText)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(12)
+                            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
         }
@@ -204,36 +279,56 @@ struct PhotoTrackView: View {
         }
     }
 
-    @MainActor
     private func loadPhotoLocations() async {
-        isLoading = true
-        defer { isLoading = false }
+        let canStart = await MainActor.run {
+            guard !isLoading else { return false }
+            isLoading = true
+            return true
+        }
+        guard canStart else { return }
 
         let status = await requestPhotoAccessIfNeeded()
-        authorizationStatus = status
+        await MainActor.run {
+            authorizationStatus = status
+        }
         guard status == .authorized || status == .limited else {
-            photoPoints = []
-            scannedPhotoCount = 0
+            await MainActor.run {
+                photoPoints = []
+                photoAssets = []
+                mapPoints = []
+                photoMemory = PhotoMemorySummary(points: [])
+                scannedPhotoCount = 0
+                cameraRequest = nil
+                isLoading = false
+            }
             return
         }
 
-        let fetchOptions = PHFetchOptions()
-        fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
-        fetchOptions.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
-        let assets = PHAsset.fetchAssets(with: fetchOptions)
+        let result = await Task.detached(priority: .userInitiated) {
+            scanPhotoLibrary()
+        }.value
 
-        var importedPoints: [PhotoLocationPoint] = []
-        assets.enumerateObjects { asset, _, _ in
-            guard let location = asset.location else { return }
-            importedPoints.append(PhotoLocationPoint(coordinate: ChinaMapCoordinateTransform.displayCoordinate(forPhotoCoordinate: location.coordinate),
-                                                     date: asset.creationDate ?? Date.distantPast))
-        }
+        let presentation = await makePhotoPresentation(from: result.points, scope: timelineScope)
 
-        scannedPhotoCount = assets.count
-        photoPoints = importedPoints.sorted { $0.date < $1.date }
-        if photoPoints.count > 1 {
-            cameraRequest = MapCameraRequest(target: .route)
+        await MainActor.run {
+            scannedPhotoCount = result.scannedCount
+            photoAssets = result.assets
+            photoPoints = result.points
+            mapPoints = presentation.mapPoints
+            photoMemory = presentation.memory
+            cameraRequest = presentation.mapPoints.isEmpty ? nil : MapCameraRequest(target: .route)
+            isLoading = false
         }
+    }
+
+    private func applyTimelineScope(_ scope: PhotoTimelineScope) async {
+        let points = photoPoints
+        guard !points.isEmpty else { return }
+        let presentation = await makePhotoPresentation(from: points, scope: scope)
+        guard timelineScope == scope else { return }
+        mapPoints = presentation.mapPoints
+        photoMemory = presentation.memory
+        cameraRequest = presentation.mapPoints.isEmpty ? nil : MapCameraRequest(target: .route)
     }
 
     private func requestPhotoAccessIfNeeded() async -> PHAuthorizationStatus {
@@ -247,13 +342,255 @@ struct PhotoTrackView: View {
     }
 }
 
-private struct PhotoLocationPoint: Identifiable {
-    let id = UUID()
+private func scanPhotoLibrary() -> PhotoScanResult {
+    autoreleasepool {
+        let fetchOptions = PHFetchOptions()
+        fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
+        fetchOptions.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+        let assets = PHAsset.fetchAssets(with: fetchOptions)
+
+        var importedAssets: [PhotoAssetRecord] = []
+        var importedPoints: [PhotoLocationPoint] = []
+        assets.enumerateObjects { asset, _, _ in
+            guard let date = asset.creationDate ?? asset.modificationDate else { return }
+            let rawCoordinate = asset.location?.coordinate
+            let displayCoordinate = rawCoordinate.map(ChinaMapCoordinateTransform.displayCoordinate(forPhotoCoordinate:))
+            importedAssets.append(PhotoAssetRecord(id: asset.localIdentifier,
+                                                   date: date,
+                                                   coordinate: displayCoordinate))
+            guard let rawCoordinate, let displayCoordinate else { return }
+            importedPoints.append(PhotoLocationPoint(id: asset.localIdentifier,
+                                                     coordinate: displayCoordinate,
+                                                     originalCoordinate: rawCoordinate,
+                                                     date: date))
+        }
+
+        let sortedAssets = importedAssets.sorted { $0.date < $1.date }
+        let sortedPoints = importedPoints.sorted { $0.date < $1.date }
+        return PhotoScanResult(scannedCount: assets.count, assets: sortedAssets, points: sortedPoints)
+    }
+}
+
+private struct PhotoScanResult {
+    let scannedCount: Int
+    let assets: [PhotoAssetRecord]
+    let points: [PhotoLocationPoint]
+}
+
+private struct PhotoPresentation {
+    let mapPoints: [TrackMapPoint]
+    let memory: PhotoMemorySummary
+
+    init(points: [PhotoLocationPoint]) {
+        mapPoints = points.map {
+            TrackMapPoint(coordinate: $0.coordinate,
+                          timestamp: $0.date,
+                          activityType: .unknown,
+                          segmentID: 0,
+                          horizontalAccuracy: 1,
+                          source: .photo)
+        }
+        self.memory = PhotoMemorySummary(points: points)
+    }
+}
+
+private func makePhotoPresentation(from points: [PhotoLocationPoint], scope: PhotoTimelineScope) async -> PhotoPresentation {
+    await Task.detached(priority: .userInitiated) {
+        PhotoPresentation(points: points.filter { scope.includes($0.date) })
+    }.value
+}
+
+private enum PhotoTimelineScope: String, CaseIterable, Identifiable {
+    case all
+    case recentMonth
+    case currentYear
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: "全部"
+        case .recentMonth: "近 30 天"
+        case .currentYear: "今年"
+        }
+    }
+
+    func includes(_ date: Date, now: Date = .now, calendar: Calendar = .current) -> Bool {
+        switch self {
+        case .all:
+            true
+        case .recentMonth:
+            date >= calendar.date(byAdding: .day, value: -30, to: now) ?? now
+        case .currentYear:
+            calendar.isDate(date, equalTo: now, toGranularity: .year)
+        }
+    }
+}
+
+struct PhotoLocationPoint: Identifiable {
+    let id: String
     let coordinate: CLLocationCoordinate2D
+    let originalCoordinate: CLLocationCoordinate2D
     let date: Date
 }
 
-private enum ChinaMapCoordinateTransform {
+private struct PhotoMemorySummary {
+    let activeDayCount: Int
+    let dateSpanText: String
+    let busiestMonthText: String
+    let hotspots: [PhotoHotspot]
+
+    init(points: [PhotoLocationPoint], calendar: Calendar = .current) {
+        let sortedPoints = points.sorted { $0.date < $1.date }
+        let activeDays = Set(sortedPoints.map { calendar.startOfDay(for: $0.date) })
+        activeDayCount = activeDays.count
+
+        if let first = sortedPoints.first?.date, let last = sortedPoints.last?.date {
+            let days = max(calendar.dateComponents([.day], from: calendar.startOfDay(for: first), to: calendar.startOfDay(for: last)).day ?? 0, 0) + 1
+            dateSpanText = "\(days) 天"
+        } else {
+            dateSpanText = "--"
+        }
+
+        let monthGroups = Dictionary(grouping: sortedPoints) { point in
+            let components = calendar.dateComponents([.year, .month], from: point.date)
+            return MonthKey(year: components.year ?? 0, month: components.month ?? 0)
+        }
+        if let busiest = monthGroups.max(by: { lhs, rhs in
+            if lhs.value.count == rhs.value.count {
+                return lhs.key.sortValue < rhs.key.sortValue
+            }
+            return lhs.value.count < rhs.value.count
+        }) {
+            busiestMonthText = "\(busiest.key.displayText) \(busiest.value.count)"
+        } else {
+            busiestMonthText = "--"
+        }
+
+        hotspots = PhotoHotspot.build(from: sortedPoints)
+    }
+}
+
+private struct MonthKey: Hashable {
+    let year: Int
+    let month: Int
+
+    var sortValue: Int { year * 100 + month }
+    var displayText: String { "\(year).\(month)" }
+}
+
+private struct PhotoHotspot: Identifiable {
+    let id = UUID()
+    let center: CLLocationCoordinate2D
+    let count: Int
+    let firstDate: Date
+    let lastDate: Date
+
+    var dateRangeText: String {
+        if Calendar.current.isDate(firstDate, inSameDayAs: lastDate) {
+            return firstDate.formatted(.dateTime.year().month().day())
+        }
+        return "\(firstDate.formatted(.dateTime.year().month().day())) - \(lastDate.formatted(.dateTime.year().month().day()))"
+    }
+
+    static func build(from points: [PhotoLocationPoint]) -> [PhotoHotspot] {
+        var clusters: [PhotoHotspotCluster] = []
+        var clusterIndexesByCell: [PhotoHotspotCell: [Int]] = [:]
+        for point in points {
+            let cell = PhotoHotspotCell(coordinate: point.coordinate)
+            var nearestIndex: Int?
+            var nearestDistance = CLLocationDistance.greatestFiniteMagnitude
+            for nearbyCell in cell.neighbors {
+                for index in clusterIndexesByCell[nearbyCell] ?? [] {
+                    let distance = clusters[index].distance(to: point.coordinate)
+                    guard distance <= 260, distance < nearestDistance else { continue }
+                    nearestIndex = index
+                    nearestDistance = distance
+                }
+            }
+            if let index = nearestIndex {
+                clusters[index].add(point)
+            } else {
+                clusters.append(PhotoHotspotCluster(point: point))
+                clusterIndexesByCell[cell, default: []].append(clusters.count - 1)
+            }
+        }
+        return clusters
+            .filter { $0.count >= 2 }
+            .sorted {
+                if $0.count == $1.count {
+                    return $0.lastDate > $1.lastDate
+                }
+                return $0.count > $1.count
+            }
+            .map {
+                PhotoHotspot(center: $0.center,
+                             count: $0.count,
+                             firstDate: $0.firstDate,
+                             lastDate: $0.lastDate)
+            }
+    }
+}
+
+private struct PhotoHotspotCell: Hashable {
+    private static let size = 0.003
+    let latitude: Int
+    let longitude: Int
+
+    init(coordinate: CLLocationCoordinate2D) {
+        latitude = Int(floor(coordinate.latitude / Self.size))
+        longitude = Int(floor(coordinate.longitude / Self.size))
+    }
+
+    var neighbors: [PhotoHotspotCell] {
+        (-1...1).flatMap { latitudeOffset in
+            (-1...1).map { longitudeOffset in
+                PhotoHotspotCell(latitude: latitude + latitudeOffset, longitude: longitude + longitudeOffset)
+            }
+        }
+    }
+
+    private init(latitude: Int, longitude: Int) {
+        self.latitude = latitude
+        self.longitude = longitude
+    }
+}
+
+private struct PhotoHotspotCluster {
+    private var latitudeSum: Double
+    private var longitudeSum: Double
+    private(set) var count: Int
+    private(set) var firstDate: Date
+    private(set) var lastDate: Date
+
+    init(point: PhotoLocationPoint) {
+        latitudeSum = point.coordinate.latitude
+        longitudeSum = point.coordinate.longitude
+        count = 1
+        firstDate = point.date
+        lastDate = point.date
+    }
+
+    var center: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitudeSum / Double(count),
+                               longitude: longitudeSum / Double(count))
+    }
+
+    mutating func add(_ point: PhotoLocationPoint) {
+        latitudeSum += point.coordinate.latitude
+        longitudeSum += point.coordinate.longitude
+        count += 1
+        firstDate = min(firstDate, point.date)
+        lastDate = max(lastDate, point.date)
+    }
+
+    func distance(to coordinate: CLLocationCoordinate2D) -> CLLocationDistance {
+        CLLocation(latitude: center.latitude, longitude: center.longitude)
+            .distance(from: CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude))
+    }
+}
+
+enum ChinaMapCoordinateTransform {
     private static let earthRadius = 6_378_245.0
     private static let eccentricity = 0.00669342162296594323
 

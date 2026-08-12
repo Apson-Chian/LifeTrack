@@ -5,36 +5,82 @@ struct HistoryView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \ActivitySession.startTime, order: .reverse) private var sessions: [ActivitySession]
     @State private var selectedActivity: ActivityFilter = .all
+    @State private var selectedSection: TrackSection = .recorded
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    Picker("显示类型", selection: $selectedActivity) {
-                        ForEach(ActivityFilter.allCases) { filter in
-                            Text(filter.displayName).tag(filter)
-                        }
+            VStack(spacing: 0) {
+                Picker("轨迹来源", selection: $selectedSection) {
+                    ForEach(TrackSection.allCases) { section in
+                        Label(section.title, systemImage: section.symbolName).tag(section)
                     }
-                    .pickerStyle(.menu)
                 }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.vertical, 10)
 
-                ForEach(groupedSessions, id: \.activity) { group in
-                    Section {
-                        ForEach(group.sessions) { session in
-                            NavigationLink { SessionDetailView(session: session) } label: { SessionRow(session: session) }
-                        }
-                        .onDelete { offsets in delete(from: group.sessions, at: offsets) }
-                    } header: {
-                        Label(group.activity.displayName, systemImage: group.activity.symbolName)
-                    }
+                switch selectedSection {
+                case .recorded:
+                    recordedTrackList
+                case .photos:
+                    PhotoTrackView()
                 }
             }
             .navigationTitle("轨迹")
-            .toolbar { EditButton() }
-            .overlay {
-                if filteredSessions.isEmpty {
-                    ContentUnavailableView("暂无轨迹", systemImage: "clock.arrow.circlepath", description: Text("开始记录后，按运动类型分类显示在这里。"))
+            .toolbar {
+                if selectedSection == .recorded {
+                    EditButton()
                 }
+            }
+        }
+    }
+
+    private var recordedTrackList: some View {
+        List {
+            Section {
+                Picker("显示类型", selection: $selectedActivity) {
+                    ForEach(ActivityFilter.allCases) { filter in
+                        Text(filter.displayName).tag(filter)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+
+            ForEach(groupedSessions, id: \.activity) { group in
+                Section {
+                    ForEach(group.sessions) { session in
+                        NavigationLink { SessionDetailView(session: session) } label: { SessionRow(session: session) }
+                    }
+                    .onDelete { offsets in delete(from: group.sessions, at: offsets) }
+                } header: {
+                    Label(group.activity.displayName, systemImage: group.activity.symbolName)
+                }
+            }
+        }
+        .overlay {
+            if filteredSessions.isEmpty {
+                ContentUnavailableView("暂无轨迹", systemImage: "clock.arrow.circlepath", description: Text("开始记录后，按运动类型分类显示在这里。"))
+            }
+        }
+    }
+
+    private enum TrackSection: String, CaseIterable, Identifiable {
+        case recorded
+        case photos
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .recorded: "记录轨迹"
+            case .photos: "照片轨迹"
+            }
+        }
+
+        var symbolName: String {
+            switch self {
+            case .recorded: "figure.walk.motion"
+            case .photos: "photo.on.rectangle.angled"
             }
         }
     }
@@ -134,6 +180,14 @@ struct SessionDetailView: View {
         session.trackPoints.sorted { $0.timestamp < $1.timestamp }.map(TrackMapPoint.init)
     }
 
+    private var anomalyCount: Int {
+        session.trackPoints.filter(\.isAnomaly).count
+    }
+
+    private var orderedStays: [StayRecord] {
+        session.stayRecords.sorted { $0.arrivalTime < $1.arrivalTime }
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
@@ -146,11 +200,16 @@ struct SessionDetailView: View {
                         StatisticTile(title: "时长", value: Formatters.duration(session.duration), symbol: "clock")
                     }
                     GridRow {
-                        StatisticTile(title: "轨迹点", value: "\(session.trackPoints.count)", symbol: "point.3.connected.trianglepath.dotted")
+                        StatisticTile(title: "有效轨迹点",
+                                      value: "\(session.trackPoints.count - anomalyCount)",
+                                      symbol: "point.3.connected.trianglepath.dotted")
                         StatisticTile(title: session.activityType == .running ? "配速" : "均速", value: metric, symbol: session.activityType.symbolName)
                     }
                 }
                 .padding(.horizontal)
+                if !orderedStays.isEmpty {
+                    stayTimeline
+                }
                 samplingNote
             }
             .padding(.vertical)
@@ -166,9 +225,47 @@ struct SessionDetailView: View {
     }
 
     private var samplingNote: some View {
-        Text("已根据\(session.activityType.displayName)调整定位频率，用于平衡轨迹细节和耗电量。距离只统计筛选后的有效定位点。")
+        Text(anomalyCount == 0
+             ? "已根据\(session.activityType.displayName)调整定位频率。距离只统计筛选后的有效定位点。"
+             : "已自动排除 \(anomalyCount) 个疑似漂移点；原始点仍保留，可用于后续重新分析。")
             .font(.footnote)
             .foregroundStyle(.secondary)
             .padding(.horizontal)
+    }
+
+    private var stayTimeline: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("停留记录")
+                .font(.headline)
+
+            ForEach(orderedStays) { stay in
+                HStack(spacing: 12) {
+                    Image(systemName: stay.customPlaceID == nil ? "mappin.circle" : "mappin.circle.fill")
+                        .foregroundStyle(.teal)
+                        .frame(width: 24)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(stay.detectedName ?? "未命名停留")
+                            .font(.subheadline.weight(.semibold))
+                        Text(stayTime(stay))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text(Formatters.duration(stay.duration))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(12)
+                .background(Color(uiColor: .secondarySystemBackground),
+                            in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+        .padding(.horizontal)
+    }
+
+    private func stayTime(_ stay: StayRecord) -> String {
+        let arrival = stay.arrivalTime.formatted(.dateTime.hour().minute())
+        guard let departure = stay.departureTime else { return "\(arrival) 起" }
+        return "\(arrival)–\(departure.formatted(.dateTime.hour().minute()))"
     }
 }

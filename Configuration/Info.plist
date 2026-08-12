@@ -27,7 +27,7 @@
     <key>NSMotionUsageDescription</key>
     <string>LifeTrack uses motion activity to adapt trip recording accuracy and save battery.</string>
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>LifeTrack reads photo location metadata to generate a photo-based travel dot map.</string>
+    <string>LifeTrack locally analyzes small photo thumbnails and reads time and location metadata to organize categories, travel albums, footprints, and timelines.</string>
     <key>UIBackgroundModes</key>
     <array>
         <string>location</string>

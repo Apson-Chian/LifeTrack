@@ -18,6 +18,8 @@ final class LocationService: NSObject, ObservableObject {
     private let motionService = MotionActivityService()
     private weak var modelContext: ModelContext?
     private var lastSavedLocation: CLLocation?
+    private var lastDistanceLocation: CLLocation?
+    private var pointsSinceLastAnalysis = 0
     private var lastActivityChange = Date.distantPast
     private var currentMotionConfidence: CMMotionActivityConfidence = .low
     private let placeRecognitionService = PlaceRecognitionService()
@@ -34,6 +36,7 @@ final class LocationService: NSObject, ObservableObject {
     func configure(with context: ModelContext) {
         modelContext = context
         recordingPreference = RecordingPreference(rawValue: UserDefaults.standard.string(forKey: "recordingPreference") ?? "smart") ?? .smart
+        reprocessStoredDataIfNeeded()
     }
 
     func requestAuthorization() {
@@ -75,6 +78,8 @@ final class LocationService: NSObject, ObservableObject {
         try? modelContext.save()
         activeSession = session
         lastSavedLocation = nil
+        lastDistanceLocation = nil
+        pointsSinceLastAnalysis = 0
         applySamplingPolicy()
         manager.allowsBackgroundLocationUpdates = manager.authorizationStatus == .authorizedAlways
         manager.startUpdatingLocation()
@@ -85,9 +90,14 @@ final class LocationService: NSObject, ObservableObject {
 
     func restore(session: ActivitySession) {
         activeSession = session
-        lastSavedLocation = session.trackPoints.sorted(by: { $0.timestamp < $1.timestamp }).last.map(Self.location(for:))
+        applyTrajectoryAnalysis(to: session)
+        let orderedPoints = session.trackPoints.sorted(by: { $0.timestamp < $1.timestamp })
+        lastSavedLocation = orderedPoints.last.map(Self.location(for:))
+        lastDistanceLocation = orderedPoints.last(where: \.isUsableForAnalysis).map(Self.location(for:))
+        pointsSinceLastAnalysis = 0
         currentActivity = session.manualActivityType ?? session.activityType
         applySamplingPolicy()
+        manager.allowsBackgroundLocationUpdates = manager.authorizationStatus == .authorizedAlways
         manager.startUpdatingLocation()
         motionService.startUpdates { [weak self] activity, confidence in
             self?.handleMotion(activity, confidence: confidence)
@@ -102,9 +112,13 @@ final class LocationService: NSObject, ObservableObject {
         session.duration = session.endTime?.timeIntervalSince(session.startTime) ?? 0
         session.isActive = false
         finalizePendingStay(at: session.endTime ?? .now)
+        applyTrajectoryAnalysis(to: session)
+        rebuildStayRecords(for: session)
         try? modelContext?.save()
         activeSession = nil
         lastSavedLocation = nil
+        lastDistanceLocation = nil
+        pointsSinceLastAnalysis = 0
     }
 
     func setManualActivity(_ activity: ActivityType?) {
@@ -145,7 +159,8 @@ final class LocationService: NSObject, ObservableObject {
         let policy = SamplingPolicy.policy(for: activity, preference: recordingPreference)
         guard shouldSave(location, after: lastSavedLocation, policy: policy) else { return }
 
-        if let previous = lastSavedLocation {
+        if let previous = lastDistanceLocation,
+           TrajectoryAnalysisService.isPlausibleLeg(from: previous, to: location) {
             let delta = location.distance(from: previous)
             session.distance += delta
         }
@@ -162,6 +177,12 @@ final class LocationService: NSObject, ObservableObject {
                                session: session)
         modelContext?.insert(point)
         lastSavedLocation = location
+        lastDistanceLocation = location
+        pointsSinceLastAnalysis += 1
+        if pointsSinceLastAnalysis >= 8 {
+            applyTrajectoryAnalysis(to: session, including: point)
+            pointsSinceLastAnalysis = 0
+        }
         updatePlaceRecognition(for: location, session: session)
         try? modelContext?.save()
     }
@@ -190,9 +211,49 @@ final class LocationService: NSObject, ObservableObject {
         let time = location.timestamp.timeIntervalSince(previous.timestamp)
         guard time > 0 else { return false }
         let distance = location.distance(from: previous)
-        // Reject teleport-like points. This also prevents a single bad fix inflating total distance.
-        guard distance / time < 55 else { return false }
         return time >= policy.minimumInterval || distance >= policy.distanceFilter
+    }
+
+    private func applyTrajectoryAnalysis(to session: ActivitySession, including pendingPoint: TrackPoint? = nil) {
+        var points = session.trackPoints
+        if let pendingPoint, !points.contains(where: { $0.id == pendingPoint.id }) {
+            points.append(pendingPoint)
+        }
+        let analysis = TrajectoryAnalysisService.analyze(points)
+        for point in points {
+            point.anomalyReason = analysis.anomalyReasons[point.id]
+        }
+        session.distance = analysis.effectiveDistance
+        lastDistanceLocation = points
+            .filter(\.isUsableForAnalysis)
+            .max(by: { $0.timestamp < $1.timestamp })
+            .map(Self.location(for:))
+    }
+
+    private func rebuildStayRecords(for session: ActivitySession) {
+        guard let modelContext else { return }
+        let places = (try? modelContext.fetch(FetchDescriptor<CustomPlace>())) ?? []
+        StayDetectionService.rebuildRecords(for: session, places: places, in: modelContext)
+    }
+
+    private func reprocessStoredDataIfNeeded() {
+        guard let modelContext else { return }
+        let versionKey = "trajectoryAnalysisVersion"
+        let currentVersion = 1
+        guard UserDefaults.standard.integer(forKey: versionKey) < currentVersion else { return }
+
+        do {
+            let places = try modelContext.fetch(FetchDescriptor<CustomPlace>())
+            let sessions = try modelContext.fetch(FetchDescriptor<ActivitySession>())
+            for session in sessions where !session.isActive {
+                applyTrajectoryAnalysis(to: session)
+                StayDetectionService.rebuildRecords(for: session, places: places, in: modelContext)
+            }
+            try modelContext.save()
+            UserDefaults.standard.set(currentVersion, forKey: versionKey)
+        } catch {
+            lastError = "历史轨迹重新分析失败：\(error.localizedDescription)"
+        }
     }
 
     private static func location(for point: TrackPoint) -> CLLocation {

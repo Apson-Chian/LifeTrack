@@ -15,9 +15,6 @@ struct RootView: View {
             HistoryView()
                 .tabItem { Label("轨迹", systemImage: "map") }
 
-            PhotoTrackView()
-                .tabItem { Label("照片轨迹", systemImage: "photo.badge.map") }
-
             PlacesView(locationService: locationService)
                 .tabItem { Label("地点", systemImage: "mappin.and.ellipse") }
 

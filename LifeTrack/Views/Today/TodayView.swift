@@ -49,7 +49,7 @@ struct TodayView: View {
                         Button {
                             guard let coordinate = locationService.currentLocation?.coordinate else { return }
                             placeDraft = PlaceDraft(coordinate: coordinate)
-                        } label: { Label("标记当前位置", systemImage: "mappin.badge.plus") }
+                        } label: { Label("标记当前位置", systemImage: "mappin.circle.fill") }
                     } label: { Image(systemName: "plus") }
                 }
             }
@@ -110,7 +110,7 @@ struct TodayView: View {
                         showFullTrack()
                     }
 
-                    MapControlButton(symbol: "mappin.badge.plus", title: "标记当前位置") {
+                    MapControlButton(symbol: "plus.circle.fill", title: "标记当前位置") {
                         markCurrentLocation()
                     }
                 }
@@ -199,10 +199,20 @@ struct TodayView: View {
     }
 
     private func distance(for activity: ActivityType) -> Double {
-        let points = todayPoints.filter { $0.activityType == activity }
-        guard points.count > 1 else { return 0 }
-        return zip(points, points.dropFirst()).reduce(0) { partial, pair in
-            partial + CLLocation(latitude: pair.0.latitude, longitude: pair.0.longitude).distance(from: CLLocation(latitude: pair.1.latitude, longitude: pair.1.longitude))
+        todaySessions.reduce(0) { total, session in
+            let points = session.trackPoints
+                .filter { $0.activityType == activity && $0.isUsableForAnalysis }
+                .sorted { $0.timestamp < $1.timestamp }
+            guard points.count > 1 else { return total }
+            let distance = zip(points, points.dropFirst()).reduce(0) { partial, pair in
+                let interval = pair.1.timestamp.timeIntervalSince(pair.0.timestamp)
+                guard interval > 0, interval <= 30 * 60 else { return partial }
+                let segment = CLLocation(latitude: pair.0.latitude, longitude: pair.0.longitude)
+                    .distance(from: CLLocation(latitude: pair.1.latitude, longitude: pair.1.longitude))
+                guard segment / interval <= 55 else { return partial }
+                return partial + segment
+            }
+            return total + distance
         }
     }
 
