@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import CoreLocation
+import Photos
 import UIKit
 
 struct TodayView: View {
@@ -16,6 +17,10 @@ struct TodayView: View {
     @State private var showTodayTrackDetail = false
     @State private var pendingPlaceFromCurrentLocation = false
     @State private var mapCameraRequest: MapCameraRequest?
+    @State private var photoDescriptors: [PhotoLibraryAssetDescriptor] = []
+    @State private var photoAuthorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+    @State private var isLoadingPhotos = false
+    @State private var selectedTrackPhoto: PhotoDetailItem?
 
     private var todaySessions: [ActivitySession] {
         sessions.filter { Calendar.current.isDateInToday($0.startTime) }
@@ -29,6 +34,9 @@ struct TodayView: View {
     }
     private var totalDistance: Double { todaySessions.reduce(0) { $0 + $1.distance } }
     private var activeDuration: TimeInterval { todaySessions.reduce(0) { $0 + $1.duration } }
+    private var todayPhotoMoments: [TrackPhotoMoment] {
+        TodayPhotoTrackService.moments(descriptors: photoDescriptors, sessions: todaySessions)
+    }
 
     var body: some View {
         NavigationStack {
@@ -39,6 +47,7 @@ struct TodayView: View {
                     quickActions
                     recordingControls
                     summary
+                    todayPhotoStory
                     AssistantFeatureCard(
                         context: .today,
                         title: "让 AI 分析今天的运动",
@@ -77,6 +86,11 @@ struct TodayView: View {
                 .presentationDetents([.height(360)])
                 .presentationDragIndicator(.visible)
             }
+            .sheet(item: $selectedTrackPhoto) { item in
+                PhotoDetailView(item: item) { identifier in
+                    photoDescriptors.removeAll { $0.id == identifier }
+                }
+            }
             .alert("未安装高德地图", isPresented: $showAmapUnavailable) {
                 Button("好", role: .cancel) { }
             } message: {
@@ -98,6 +112,7 @@ struct TodayView: View {
                 TodayTrackDetailView(sessions: todaySessions,
                                      places: places,
                                      currentLocation: locationService.currentLocation,
+                                     photoMoments: todayPhotoMoments,
                                      onLongPress: { coordinate in
                                          placeDraft = PlaceDraft(coordinate: coordinate)
                                      })
@@ -107,6 +122,10 @@ struct TodayView: View {
                 pendingPlaceFromCurrentLocation = false
                 placeDraft = PlaceDraft(coordinate: coordinate)
             }
+            .task { await loadTodayPhotos(requestAccess: false) }
+            .onReceive(NotificationCenter.default.publisher(for: .lifeTrackPhotoLibraryDidChange)) { _ in
+                Task { await loadTodayPhotos(requestAccess: false) }
+            }
         }
     }
 
@@ -115,9 +134,12 @@ struct TodayView: View {
             TrackMapView(points: todayMapPoints,
                          places: places,
                          currentLocation: locationService.currentLocation,
-                         cameraRequest: mapCameraRequest) { coordinate in
-                placeDraft = PlaceDraft(coordinate: coordinate)
-            }
+                         cameraRequest: mapCameraRequest,
+                         photoMoments: todayPhotoMoments,
+                         onPhotoTap: showPhoto,
+                         onLongPress: { coordinate in
+                             placeDraft = PlaceDraft(coordinate: coordinate)
+                         })
             .frame(height: 220)
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay(alignment: .topTrailing) {
@@ -146,6 +168,7 @@ struct TodayView: View {
                 TodayTrackDetailView(sessions: todaySessions,
                                      places: places,
                                      currentLocation: locationService.currentLocation,
+                                     photoMoments: todayPhotoMoments,
                                      onLongPress: { coordinate in
                                          placeDraft = PlaceDraft(coordinate: coordinate)
                                      })
@@ -238,7 +261,64 @@ struct TodayView: View {
             GridRow { StatisticTile(title: "移动距离", value: Formatters.distance(totalDistance), symbol: "arrow.left.and.right")
                 StatisticTile(title: "运动时长", value: Formatters.duration(activeDuration), symbol: "clock") }
             GridRow { StatisticTile(title: "停留地点", value: "\(todaySessions.flatMap(\.stayRecords).count)", symbol: "mappin")
-                StatisticTile(title: "记录次数", value: "\(todaySessions.count)", symbol: "figure.walk") }
+                StatisticTile(title: "轨迹照片", value: "\(todayPhotoMoments.count)", symbol: "photo.on.rectangle.angled") }
+        }
+        .padding(.horizontal)
+    }
+
+    @ViewBuilder
+    private var todayPhotoStory: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("今日足迹故事").font(.headline)
+                    Text("GPS 描绘路线，照片补全沿途时刻")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if isLoadingPhotos { ProgressView().controlSize(.small) }
+            }
+
+            if !todayPhotoMoments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(todayPhotoMoments) { moment in
+                            Button { showPhoto(moment.assetIdentifier) } label: {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    PhotoGalleryThumbnailView(assetIdentifier: moment.assetIdentifier,
+                                                              cornerRadius: 10)
+                                        .frame(width: 86, height: 86)
+                                    Text(moment.creationDate, style: .time)
+                                        .font(.caption.weight(.medium))
+                                    Label(moment.usesPhotoLocation ? "照片定位" : "按时间匹配",
+                                          systemImage: moment.usesPhotoLocation ? "mappin" : "clock")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(width: 86, alignment: .leading)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            } else {
+                switch photoAuthorization {
+                case .notDetermined:
+                    Button { Task { await loadTodayPhotos(requestAccess: true) } } label: {
+                        Label("允许照片参与今日轨迹", systemImage: "photo.badge.plus")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                case .denied, .restricted:
+                    Button("到系统设置允许照片访问", action: openSystemSettings)
+                        .buttonStyle(.bordered)
+                default:
+                    Text(todaySessions.isEmpty ? "开始记录运动后，沿途照片会自动出现在对应轨迹节点。" : "今天还没有与运动时间和路线匹配的照片。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .padding(.horizontal)
     }
@@ -329,17 +409,56 @@ struct TodayView: View {
             showAmapUnavailable = true
         }
     }
+
+    private func showPhoto(_ identifier: String) {
+        guard let descriptor = photoDescriptors.first(where: { $0.id == identifier }) else { return }
+        let coordinate: CLLocationCoordinate2D?
+        if let latitude = descriptor.originalLatitude, let longitude = descriptor.originalLongitude {
+            coordinate = .init(latitude: latitude, longitude: longitude)
+        } else {
+            coordinate = nil
+        }
+        selectedTrackPhoto = PhotoDetailItem(assetIdentifier: descriptor.id,
+                                             creationDate: descriptor.creationDate,
+                                             coordinate: coordinate)
+    }
+
+    private func loadTodayPhotos(requestAccess: Bool) async {
+        var status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if requestAccess && status == .notDetermined {
+            status = await withCheckedContinuation { continuation in
+                PHPhotoLibrary.requestAuthorization(for: .readWrite) { continuation.resume(returning: $0) }
+            }
+            PhotoLibraryScanCache.invalidate()
+        }
+        photoAuthorization = status
+        guard status == .authorized || status == .limited else {
+            photoDescriptors = []
+            return
+        }
+        guard !isLoadingPhotos else { return }
+        isLoadingPhotos = true
+        PhotoLibraryChangeMonitor.shared.ensureRegistered()
+        let generation = PhotoLibraryChangeMonitor.shared.generation
+        let descriptors = await Task.detached(priority: .utility) {
+            PhotoLibraryScanCache.descriptors(currentGeneration: generation)
+        }.value
+        photoDescriptors = descriptors.filter { Calendar.current.isDateInToday($0.creationDate) }
+        isLoadingPhotos = false
+    }
 }
 
 private struct TodayTrackDetailView: View {
     let sessions: [ActivitySession]
     let places: [CustomPlace]
     let currentLocation: CLLocation?
+    let photoMoments: [TrackPhotoMoment]
     let onLongPress: (CLLocationCoordinate2D) -> Void
 
     @State private var showDestinationSearch = false
     @State private var showAmapUnavailable = false
     @State private var mapCameraRequest: MapCameraRequest?
+    @State private var selectedPhoto: PhotoDetailItem?
 
     private var points: [TrackPoint] {
         sessions.flatMap(\.trackPoints).sorted { $0.timestamp < $1.timestamp }
@@ -416,6 +535,7 @@ private struct TodayTrackDetailView: View {
                 .padding(.horizontal)
 
                 sessionList
+                if !photoMoments.isEmpty { photoTimeline }
             }
             .padding(.vertical)
         }
@@ -431,6 +551,7 @@ private struct TodayTrackDetailView: View {
         } message: {
             Text("安装高德地图后可开始导航。LifeTrack 会独立保存本地轨迹。")
         }
+        .sheet(item: $selectedPhoto) { item in PhotoDetailView(item: item) }
     }
 
     private var vividTrackMap: some View {
@@ -440,6 +561,8 @@ private struct TodayTrackDetailView: View {
                          currentLocation: currentLocation,
                          cameraRequest: mapCameraRequest,
                          style: .vivid,
+                         photoMoments: photoMoments,
+                         onPhotoTap: showPhoto,
                          onLongPress: onLongPress)
             .frame(height: 420)
             .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -495,6 +618,39 @@ private struct TodayTrackDetailView: View {
             }
         }
         .padding(.horizontal)
+    }
+
+    private var photoTimeline: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("沿途照片").font(.headline)
+            ForEach(photoMoments) { moment in
+                Button { showPhoto(moment.assetIdentifier) } label: {
+                    HStack(spacing: 12) {
+                        PhotoGalleryThumbnailView(assetIdentifier: moment.assetIdentifier,
+                                                  cornerRadius: 9)
+                            .frame(width: 58, height: 58)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(moment.creationDate, style: .time)
+                                .font(.subheadline.weight(.semibold))
+                            Text(moment.usesPhotoLocation ? "照片位置与 GPS 轨迹匹配" : "拍摄时间与 GPS 轨迹匹配")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal)
+    }
+
+    private func showPhoto(_ identifier: String) {
+        guard let moment = photoMoments.first(where: { $0.assetIdentifier == identifier }) else { return }
+        selectedPhoto = PhotoDetailItem(assetIdentifier: moment.assetIdentifier,
+                                        creationDate: moment.creationDate,
+                                        coordinate: moment.usesPhotoLocation ? moment.coordinate : nil)
     }
 
     private func openAMapNavigation(to coordinate: CLLocationCoordinate2D, name: String) {

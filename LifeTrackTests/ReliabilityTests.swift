@@ -469,6 +469,43 @@ final class ReliabilityTests: XCTestCase {
             timelineNodes: [], confirmed: []).isEmpty)
     }
 
+    func testTodayPhotosRequireGPSOrTimeMatchToRecordedTrack() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let start = Calendar.current.date(bySettingHour: 10, minute: 0, second: 0, of: .now)!
+        let session = insertSession(start: start,
+                                    coordinates: [(31.20, 121.40), (31.201, 121.401), (31.202, 121.402)],
+                                    into: context)
+        let matchingGPS = PhotoLibraryAssetDescriptor(id: "near-gps",
+                                                      creationDate: start.addingTimeInterval(30),
+                                                      displayLatitude: 31.201,
+                                                      displayLongitude: 121.401,
+                                                      originalLatitude: 31.201,
+                                                      originalLongitude: 121.401,
+                                                      isSelfie: false)
+        let matchingTime = PhotoLibraryAssetDescriptor(id: "time-only",
+                                                       creationDate: start.addingTimeInterval(60),
+                                                       displayLatitude: nil,
+                                                       displayLongitude: nil,
+                                                       originalLatitude: nil,
+                                                       originalLongitude: nil,
+                                                       isSelfie: false)
+        let farGPS = PhotoLibraryAssetDescriptor(id: "far-gps",
+                                                 creationDate: start.addingTimeInterval(30),
+                                                 displayLatitude: 35,
+                                                 displayLongitude: 121.4,
+                                                 originalLatitude: 35,
+                                                 originalLongitude: 121.4,
+                                                 isSelfie: false)
+
+        let moments = TodayPhotoTrackService.moments(descriptors: [matchingGPS, matchingTime, farGPS],
+                                                     sessions: [session])
+
+        XCTAssertEqual(Set(moments.map(\.assetIdentifier)), ["near-gps", "time-only"])
+        XCTAssertTrue(moments.first { $0.assetIdentifier == "near-gps" }?.usesPhotoLocation == true)
+        XCTAssertTrue(moments.first { $0.assetIdentifier == "time-only" }?.usesPhotoLocation == false)
+    }
+
     func testPhotoAIPrivacyFilterRemovesSensitiveData() {
         let record = PhotoAnalysisRecord(
             assetIdentifier: "secret-asset-id",
