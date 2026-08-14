@@ -252,6 +252,7 @@ private struct ConversationTurnCard: View {
         .background(Color(uiColor: .secondarySystemBackground),
                     in: RoundedRectangle(cornerRadius: 16))
         .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
     }
 }
 
@@ -262,7 +263,7 @@ private struct ChatBubble: View {
     var body: some View {
         HStack {
             if isUser { Spacer(minLength: 42) }
-            Text(text)
+            Text(text.assistantDisplayText)
                 .font(.subheadline)
                 .foregroundStyle(isUser ? Color.white : Color.primary)
                 .textSelection(.enabled)
@@ -292,7 +293,7 @@ private struct InsightRow: View {
             Text(insight.createdAt.formatted(date: .abbreviated, time: .shortened))
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
-            Text(insight.content)
+            Text(insight.content.assistantDisplayText)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -302,6 +303,27 @@ private struct InsightRow: View {
         .background(Color(uiColor: .secondarySystemBackground),
                     in: RoundedRectangle(cornerRadius: 14))
         .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+    }
+}
+
+extension String {
+    /// 模型常返回 Markdown 强调符号；原始内容仍保存在数据库，只在界面层清理展示。
+    var assistantDisplayText: String {
+        split(separator: "\n", omittingEmptySubsequences: false).map { rawLine in
+            var line = String(rawLine)
+            while line.hasPrefix("#") { line.removeFirst() }
+            line = line.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("* ") || line.hasPrefix("- ") {
+                line = "• " + line.dropFirst(2)
+            }
+            return line
+                .replacingOccurrences(of: "**", with: "")
+                .replacingOccurrences(of: "__", with: "")
+                .replacingOccurrences(of: "`", with: "")
+                .replacingOccurrences(of: "*", with: "")
+        }
+        .joined(separator: "\n")
     }
 }
 

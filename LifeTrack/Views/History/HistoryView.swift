@@ -1,6 +1,8 @@
 import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
+import Photos
+import CoreLocation
 
 struct HistoryView: View {
     @Environment(\.modelContext) private var modelContext
@@ -366,6 +368,9 @@ struct SessionDetailView: View {
     @Query private var places: [CustomPlace]
     @State private var sharedFile: SharedFile?
     @State private var exportError: String?
+    @State private var photoDescriptors: [PhotoLibraryAssetDescriptor] = []
+    @State private var photoAuthorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+    @State private var selectedPhoto: PhotoDetailItem?
 
     private var mapPoints: [TrackMapPoint] {
         session.trackPoints.sorted { $0.timestamp < $1.timestamp }.map(TrackMapPoint.init).downsampledForMap()
@@ -383,10 +388,20 @@ struct SessionDetailView: View {
         TrajectoryQualityService.evaluate(session)
     }
 
+    private var photoMoments: [TrackPhotoMoment] {
+        TodayPhotoTrackService.momentsForRecordedTracks(descriptors: photoDescriptors,
+                                                        sessions: [session])
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                TrackMapView(points: mapPoints, places: places, currentLocation: nil) { _ in }
+                TrackMapView(points: mapPoints,
+                             places: places,
+                             currentLocation: nil,
+                             photoMoments: photoMoments,
+                             onPhotoTap: showPhoto,
+                             onLongPress: { _ in })
                     .frame(height: 290)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(alignment: .bottomLeading) { TrackSpeedLegend().padding(10) }
@@ -404,6 +419,7 @@ struct SessionDetailView: View {
                 }
                 .padding(.horizontal)
                 trajectoryQualityCard
+                sessionPhotos
                 if !orderedStays.isEmpty {
                     stayTimeline
                 }
@@ -433,11 +449,67 @@ struct SessionDetailView: View {
         .sheet(item: $sharedFile) { file in
             ShareSheet(items: [file.url])
         }
+        .sheet(item: $selectedPhoto) { item in
+            PhotoDetailView(item: item) { identifier in
+                photoDescriptors.removeAll { $0.id == identifier }
+            }
+        }
+        .task { await loadSessionPhotos(requestAccess: false) }
         .alert("无法导出 GPX", isPresented: exportErrorPresented) {
             Button("好", role: .cancel) { exportError = nil }
         } message: {
             Text(exportError ?? "请稍后重试。")
         }
+    }
+
+    @ViewBuilder
+    private var sessionPhotos: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("沿途照片").font(.headline)
+                Spacer()
+                if !photoMoments.isEmpty {
+                    Text("\(photoMoments.count) 张")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if photoMoments.isEmpty {
+                if photoAuthorization == .notDetermined {
+                    Button {
+                        Task { await loadSessionPhotos(requestAccess: true) }
+                    } label: {
+                        Label("允许显示这次运动的照片", systemImage: "photo.badge.plus")
+                    }
+                    .buttonStyle(.bordered)
+                } else if photoAuthorization == .authorized || photoAuthorization == .limited {
+                    Text("没有找到与这次运动时间和 GPS 路线匹配的照片。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(photoMoments) { moment in
+                            Button { showPhoto(moment.assetIdentifier) } label: {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    PhotoSquareThumbnail(assetIdentifier: moment.assetIdentifier,
+                                                         cornerRadius: 10)
+                                        .frame(width: 92)
+                                    Text(moment.creationDate, style: .time)
+                                        .font(.caption.weight(.medium))
+                                }
+                                .frame(width: 92, alignment: .leading)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("查看沿途照片详情")
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal)
     }
 
     private var trajectoryQualityCard: some View {
@@ -550,6 +622,42 @@ struct SessionDetailView: View {
         } catch {
             exportError = error.localizedDescription
         }
+    }
+
+    private func showPhoto(_ identifier: String) {
+        guard let descriptor = photoDescriptors.first(where: { $0.id == identifier }) else { return }
+        let coordinate: CLLocationCoordinate2D?
+        if let latitude = descriptor.originalLatitude, let longitude = descriptor.originalLongitude {
+            coordinate = .init(latitude: latitude, longitude: longitude)
+        } else {
+            coordinate = nil
+        }
+        selectedPhoto = PhotoDetailItem(assetIdentifier: descriptor.id,
+                                        creationDate: descriptor.creationDate,
+                                        coordinate: coordinate,
+                                        linkedSessionID: session.id)
+    }
+
+    private func loadSessionPhotos(requestAccess: Bool) async {
+        var status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if requestAccess && status == .notDetermined {
+            status = await withCheckedContinuation { continuation in
+                PHPhotoLibrary.requestAuthorization(for: .readWrite) { continuation.resume(returning: $0) }
+            }
+            PhotoLibraryScanCache.invalidate()
+        }
+        photoAuthorization = status
+        guard status == .authorized || status == .limited else { return }
+        PhotoLibraryChangeMonitor.shared.ensureRegistered()
+        let generation = PhotoLibraryChangeMonitor.shared.generation
+        let start = session.startTime.addingTimeInterval(-2 * 60 * 60)
+        let end = (session.endTime ?? session.startTime.addingTimeInterval(session.duration))
+            .addingTimeInterval(2 * 60 * 60)
+        let descriptors = await Task.detached(priority: .utility) {
+            PhotoLibraryScanCache.descriptors(currentGeneration: generation)
+                .filter { $0.creationDate >= start && $0.creationDate <= end }
+        }.value
+        photoDescriptors = descriptors
     }
 
     private var exportErrorPresented: Binding<Bool> {

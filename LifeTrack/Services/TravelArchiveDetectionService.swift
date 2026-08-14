@@ -116,6 +116,11 @@ enum TravelArchiveDetectionService {
         routineProfile(places: places, stays: stays).summary
     }
 
+    /// 供旅行时间轴在本机判断历史照片是否明显离开家、学校或长期高频地点。
+    static func routineAnchors(places: [CustomPlace], stays: [StayRecord]) -> [CLLocationCoordinate2D] {
+        routineProfile(places: places, stays: stays).anchors
+    }
+
     private static func candidateDays(sessions: [ActivitySession],
                                       stays: [StayRecord],
                                       calendar: Calendar) -> [Date] {

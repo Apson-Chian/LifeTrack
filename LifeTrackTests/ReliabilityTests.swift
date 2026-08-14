@@ -402,6 +402,11 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertTrue(AIProvider.deepSeek.availableModels.contains("deepseek-v4-pro"))
     }
 
+    func testAssistantDisplayTextRemovesMarkdownNoise() {
+        XCTAssertEqual("**重点**\n* 第一项\n### 小结".assistantDisplayText,
+                       "重点\n• 第一项\n小结")
+    }
+
     func testTravelDetectionUsesRoutineAndExcludesHomePhotos() throws {
         let container = try makeContainer()
         let context = container.mainContext
@@ -504,6 +509,38 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertEqual(Set(moments.map(\.assetIdentifier)), ["near-gps", "time-only"])
         XCTAssertTrue(moments.first { $0.assetIdentifier == "near-gps" }?.usesPhotoLocation == true)
         XCTAssertTrue(moments.first { $0.assetIdentifier == "time-only" }?.usesPhotoLocation == false)
+    }
+
+    func testHistoricalExerciseCanDisplayAssociatedPhotos() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let start = Date(timeIntervalSince1970: 1_650_000_000)
+        let session = insertSession(start: start,
+                                    coordinates: [(31.20, 121.40), (31.201, 121.401)],
+                                    into: context)
+        let descriptor = PhotoLibraryAssetDescriptor(id: "historical-exercise-photo",
+                                                     creationDate: start.addingTimeInterval(30),
+                                                     displayLatitude: 31.201,
+                                                     displayLongitude: 121.401,
+                                                     originalLatitude: 31.201,
+                                                     originalLongitude: 121.401,
+                                                     isSelfie: false)
+
+        let moments = TodayPhotoTrackService.momentsForRecordedTracks(descriptors: [descriptor],
+                                                                      sessions: [session])
+
+        XCTAssertEqual(moments.map(\.assetIdentifier), ["historical-exercise-photo"])
+    }
+
+    func testHistoricalPhotoTravelEvidenceExcludesRoutineAreaAndRestoresRemoteDays() {
+        let home = CLLocationCoordinate2D(latitude: 31.20, longitude: 121.40)
+        let nearby = CLLocationCoordinate2D(latitude: 31.25, longitude: 121.45)
+        let remote = CLLocationCoordinate2D(latitude: 39.90, longitude: 116.40)
+
+        XCTAssertFalse(TravelTimelineGenerationService.isHistoricalPhotoTravelEvidence(
+            coordinate: nearby, routineAnchors: [home], groupPhotoCount: 20))
+        XCTAssertTrue(TravelTimelineGenerationService.isHistoricalPhotoTravelEvidence(
+            coordinate: remote, routineAnchors: [home], groupPhotoCount: 1))
     }
 
     func testTimelineCacheRebuildNeverDeletesHistoricalTripsMissingFromCurrentDrafts() async throws {

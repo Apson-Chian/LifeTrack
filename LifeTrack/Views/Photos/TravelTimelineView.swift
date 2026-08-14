@@ -6,12 +6,16 @@ struct PhotoTravelTimelineView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \TravelTimelineTrip.startTime, order: .reverse) private var trips: [TravelTimelineTrip]
     @Query(sort: \ActivitySession.startTime, order: .forward) private var sessions: [ActivitySession]
+    @Query private var places: [CustomPlace]
+    @Query private var stays: [StayRecord]
 
     @State private var selectedTripID: UUID?
     @State private var selectedNodeID: UUID?
     @State private var cameraRequest: MapCameraRequest?
     @State private var isRefreshing = false
+    @State private var isRestoringHistory = false
     @State private var statusMessage: String?
+    @State private var selectedPhoto: PhotoDetailItem?
 
     private var selectedTrip: TravelTimelineTrip? {
         if let selectedTripID, let selected = trips.first(where: { $0.id == selectedTripID }) {
@@ -68,26 +72,33 @@ struct PhotoTravelTimelineView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    Task { await refreshTimeline() }
+                    Task {
+                        await refreshTimeline()
+                        await restoreHistoricalTrips()
+                    }
                 } label: {
-                    if isRefreshing {
+                    if isRefreshing || isRestoringHistory {
                         ProgressView()
                     } else {
                         Image(systemName: "arrow.clockwise")
                     }
                 }
-                .disabled(isRefreshing)
+                .disabled(isRefreshing || isRestoringHistory)
                 .accessibilityLabel("增量更新旅行时间轴")
             }
         }
         .task {
             if selectedTripID == nil { selectedTripID = trips.first?.id }
-            // 进入页面只读取并修复已有缓存；相册扫描与 Vision 分析留给右上角手动刷新。
+            // 先即时读取缓存，再在后台枚举照片时间/GPS 元数据恢复旧行程；不加载图片或运行 Vision。
             await rebuildFromCache()
+            await restoreHistoricalTrips()
         }
         .onChange(of: selectedTripID) { _, _ in
             selectedNodeID = nil
             cameraRequest = MapCameraRequest(target: .route)
+        }
+        .sheet(item: $selectedPhoto) { item in
+            PhotoDetailView(item: item)
         }
     }
 
@@ -197,7 +208,8 @@ struct PhotoTravelTimelineView: View {
                 ForEach(Array(orderedNodes.enumerated()), id: \.element.id) { index, node in
                     TravelTimelineNodeRow(node: node,
                                           isSelected: node.id == selectedNodeID,
-                                          isLast: index == orderedNodes.count - 1) {
+                                          isLast: index == orderedNodes.count - 1,
+                                          onPhotoTap: showPhoto) {
                         selectedNodeID = node.id
                         cameraRequest = MapCameraRequest(target: .coordinate(lat: node.latitude,
                                                                              lon: node.longitude))
@@ -246,6 +258,26 @@ struct PhotoTravelTimelineView: View {
         }
     }
 
+    private func restoreHistoricalTrips() async {
+        guard !isRestoringHistory else { return }
+        isRestoringHistory = true
+        let summary = await TravelTimelineGenerationService.rebuildFromPhotoMetadata(context: modelContext,
+                                                                                      sessions: sessions,
+                                                                                      places: places,
+                                                                                      stays: stays)
+        if summary.updatedTripCount > 0 {
+            statusMessage = "已根据日常活动圈从历史照片元数据恢复 \(summary.updatedTripCount) 次异地行程。"
+        }
+        if selectedTripID == nil { selectedTripID = trips.first?.id }
+        isRestoringHistory = false
+    }
+
+    private func showPhoto(_ identifier: String, date: Date, coordinate: CLLocationCoordinate2D?) {
+        selectedPhoto = PhotoDetailItem(assetIdentifier: identifier,
+                                        creationDate: date,
+                                        coordinate: coordinate)
+    }
+
     private func tripDateText(_ trip: TravelTimelineTrip) -> String {
         if Calendar.current.isDate(trip.startTime, inSameDayAs: trip.endTime) {
             return trip.startTime.formatted(.dateTime.year().month().day().weekday(.wide))
@@ -258,6 +290,7 @@ private struct TravelTimelineNodeRow: View {
     let node: TravelTimelineNode
     let isSelected: Bool
     let isLast: Bool
+    let onPhotoTap: (String, Date, CLLocationCoordinate2D?) -> Void
     let onSelect: () -> Void
 
     var body: some View {
@@ -278,8 +311,7 @@ private struct TravelTimelineNodeRow: View {
                 }
             }
 
-            Button(action: onSelect) {
-                VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 10) {
                     HStack(alignment: .firstTextBaseline) {
                         Text(timeText)
                             .font(.subheadline.weight(.semibold))
@@ -287,6 +319,11 @@ private struct TravelTimelineNodeRow: View {
                         Text(node.kind == .stay ? durationText(node.duration) : distanceText(node.distance))
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(node.kind == .stay ? Color.indigo : activityColor)
+                        Button(action: onSelect) {
+                            Image(systemName: "map")
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("在地图中定位")
                     }
 
                     Label(locationText, systemImage: node.kind == .stay ? "mappin.and.ellipse" : "arrow.right")
@@ -329,8 +366,14 @@ private struct TravelTimelineNodeRow: View {
                     if !node.photoIdentifiers.isEmpty {
                         HStack(spacing: 6) {
                             ForEach(Array(node.photoIdentifiers.prefix(3)), id: \.self) { identifier in
-                                PhotoSquareThumbnail(assetIdentifier: identifier, cornerRadius: 10)
-                                    .frame(width: 76)
+                                Button {
+                                    onPhotoTap(identifier, node.startTime, node.coordinate)
+                                } label: {
+                                    PhotoSquareThumbnail(assetIdentifier: identifier, cornerRadius: 10)
+                                        .frame(width: 76)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("查看照片详情")
                             }
                             if node.photoIdentifiers.count > 3 {
                                 Text("+\(node.photoIdentifiers.count - 3)")
@@ -339,20 +382,16 @@ private struct TravelTimelineNodeRow: View {
                             }
                         }
                     }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(14)
-                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(isSelected ? Color.indigo : Color.clear, lineWidth: 2)
-                }
-                .padding(.bottom, 12)
             }
-            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(isSelected ? Color.indigo : Color.clear, lineWidth: 2)
+            }
+            .padding(.bottom, 12)
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityHint("轻点后地图定位到该节点")
     }
 
     private var timeText: String {

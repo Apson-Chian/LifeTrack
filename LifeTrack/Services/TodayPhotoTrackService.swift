@@ -13,11 +13,17 @@ enum TodayPhotoTrackService {
                         sessions: [ActivitySession],
                         calendar: Calendar = .current) -> [TrackPhotoMoment] {
         let todayDescriptors = descriptors.filter { calendar.isDateInToday($0.creationDate) }
-        guard !todayDescriptors.isEmpty, !sessions.isEmpty else { return [] }
+        return momentsForRecordedTracks(descriptors: todayDescriptors, sessions: sessions)
+    }
+
+    /// 为历史运动详情关联照片；仍要求真实 GPS/时间匹配，不会因为照片本身生成轨迹。
+    static func momentsForRecordedTracks(descriptors: [PhotoLibraryAssetDescriptor],
+                                         sessions: [ActivitySession]) -> [TrackPhotoMoment] {
+        guard !descriptors.isEmpty, !sessions.isEmpty else { return [] }
         let snapshots = PhotoTrackAssociationService.snapshots(from: sessions)
         let sessionsByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
 
-        return todayDescriptors.compactMap { descriptor in
+        return descriptors.compactMap { descriptor in
             guard let sessionID = PhotoTrackAssociationService.bestSessionID(for: descriptor,
                                                                               sessions: snapshots),
                   let session = sessionsByID[sessionID] else { return nil }

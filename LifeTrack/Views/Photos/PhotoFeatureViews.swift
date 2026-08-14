@@ -535,6 +535,7 @@ private struct LegacyPhotoTravelTimelineView: View {
 
 private struct PhotoTimelineDayRow: View {
     let day: PhotoTimelineDay
+    @State private var selectedPhoto: PhotoDetailItem?
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -574,13 +575,25 @@ private struct PhotoTimelineDayRow: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(day.assets.prefix(12)) { asset in
+                            Button {
+                                selectedPhoto = PhotoDetailItem(assetIdentifier: asset.id,
+                                                                creationDate: asset.date,
+                                                                coordinate: asset.coordinate,
+                                                                linkedSessionID: asset.linkedSessionID)
+                            } label: {
                                 PhotoSquareThumbnail(assetIdentifier: asset.id, cornerRadius: 10)
                                     .frame(width: 86)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("查看照片详情")
                         }
                     }
                 }
             }
             .padding(.bottom, 16)
+        }
+        .sheet(item: $selectedPhoto) { item in
+            PhotoDetailView(item: item)
         }
     }
 }
