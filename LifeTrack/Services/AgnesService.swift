@@ -4,8 +4,8 @@ import Foundation
 //
 // 本文件实现与 agnes-ai（OpenAI 兼容网关）的对话客户端。
 // 设计上 **只发送文字（String content）**，不存在图片内容分支。
-// Agent 工具层也不查询 PhotoAnalysisRecord：原图、缩略图、路径、资产标识符、
-// 本机视觉标签和照片统计都不会交给 Agnes。
+// Agent 工具层只允许照片解析结果经过 PhotoAIPrivacyFilter 后以聚合文本输出：
+// 原图、缩略图、路径、资产标识符、坐标、拍摄时间和人物信息不会交给 Agnes。
 
 enum AgnesSettings {
     private static let enabledKey = "agnes.enabled"
@@ -129,6 +129,7 @@ enum AgnesOutcome {
 
 enum AgnesError: LocalizedError {
     case notConfigured
+    case emptyQuestion
     case invalidResponse
     case http(status: Int, detail: String)
     case unexpectedToolCall
@@ -137,6 +138,8 @@ enum AgnesError: LocalizedError {
         switch self {
         case .notConfigured:
             "尚未配置 Agnes API Key，请到“设置 → AI 助手”中填写。"
+        case .emptyQuestion:
+            "请输入想问的问题。"
         case .invalidResponse:
             "Agnes 返回的内容无法解析，请稍后重试。"
         case let .http(status, detail):
@@ -255,7 +258,7 @@ struct AgnesClient {
     }
 }
 
-private extension AgnesWireMessage {
+extension AgnesWireMessage {
     /// 序列化为 OpenAI 兼容的请求体。结构上仅允许字符串 content。
     var dictionary: [String: Any] {
         var result: [String: Any] = ["role": role]

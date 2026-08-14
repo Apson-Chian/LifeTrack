@@ -39,6 +39,12 @@ struct TodayView: View {
                     quickActions
                     recordingControls
                     summary
+                    AssistantFeatureCard(
+                        context: .today,
+                        title: "让 AI 分析今天的运动",
+                        subtitle: "结合今日轨迹、停留与过去记录回答问题"
+                    )
+                    .padding(.horizontal)
                     activityBreakdown
                 }
                 .padding(.vertical)

@@ -34,6 +34,9 @@ struct HistoryView: View {
             }
             .navigationTitle("轨迹")
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    AssistantToolbarLink(context: .activity)
+                }
                 if selectedSection == .recorded {
                     ToolbarItem(placement: .topBarLeading) { EditButton() }
                     ToolbarItem(placement: .topBarTrailing) {

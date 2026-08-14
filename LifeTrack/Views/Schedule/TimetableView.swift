@@ -43,6 +43,9 @@ struct TimetableView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
+                AssistantToolbarLink(context: .schedule)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
                         editingCourse = nil

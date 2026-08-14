@@ -379,16 +379,56 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertEqual(nodes.first?.photoIdentifiers, ["keep-me"])
     }
 
-    func testAgentToolsCannotReadPhotoData() {
+    func testAgentToolsCoverWholeAppWithSanitizedPhotoAccess() {
         let toolNames = Set(LifeAgentService.tools.map(\.name))
-        XCTAssertFalse(toolNames.contains { $0.localizedCaseInsensitiveContains("photo") })
         XCTAssertEqual(toolNames, [
             "get_activity_summary",
+            "get_activity_range",
             "get_stay_summary",
+            "get_place_overview",
+            "get_journey_summary",
             "get_schedule",
             "get_study_stats",
-            "get_travel_archives"
+            "get_travel_archives",
+            "get_sanitized_photo_summary"
         ])
+    }
+
+    func testPhotoAIPrivacyFilterRemovesSensitiveData() {
+        let record = PhotoAnalysisRecord(
+            assetIdentifier: "secret-asset-id",
+            creationDate: Date(timeIntervalSince1970: 1_700_000_000),
+            latitude: 31.234567,
+            longitude: 121.456789,
+            categories: [.landscape, .people, .selfie],
+            topLabels: ["mountain|0.98", "person|0.99", "passport|0.91", "beach|0.80"],
+            confidence: 0.98,
+            faceCount: 3,
+            state: .completed,
+            linkedSessionID: UUID()
+        )
+
+        let summary = PhotoAIPrivacyFilter.summary(records: [record], days: 30)
+        XCTAssertTrue(summary.contains("风景"))
+        XCTAssertTrue(summary.contains("mountain"))
+        XCTAssertTrue(summary.contains("beach"))
+        XCTAssertFalse(summary.contains("- 人物："))
+        XCTAssertFalse(summary.contains("- 自拍："))
+        XCTAssertFalse(summary.contains("person"))
+        XCTAssertFalse(summary.contains("passport"))
+        XCTAssertFalse(summary.contains("secret-asset-id"))
+        XCTAssertFalse(summary.contains("31.234567"))
+        XCTAssertFalse(summary.contains("121.456789"))
+        XCTAssertFalse(summary.contains("1700000000"))
+        XCTAssertFalse(summary.contains("3 张脸"))
+    }
+
+    func testAgnesWireMessageHasNoImageContentBranch() {
+        let dictionary = AgnesWireMessage.text("只发送文字", role: .user).dictionary
+        XCTAssertEqual(dictionary["content"] as? String, "只发送文字")
+        XCTAssertNil(dictionary["image_url"])
+        XCTAssertNil(dictionary["image"])
+        XCTAssertFalse(String(describing: dictionary).contains("base64"))
     }
 
     func testAgentSchemaMigratesFromV3ToV4() throws {

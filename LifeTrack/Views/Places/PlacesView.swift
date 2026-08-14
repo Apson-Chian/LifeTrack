@@ -81,6 +81,9 @@ struct PlacesView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { EditButton() }
                 ToolbarItem(placement: .topBarTrailing) {
+                    AssistantToolbarLink(context: .places)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button {
                             addPlace(isCampusPlace: true)

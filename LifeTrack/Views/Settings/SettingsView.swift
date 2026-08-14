@@ -107,7 +107,7 @@ struct SettingsView: View {
                     } label: {
                         Label("AI 助手（agnes-ai）", systemImage: "sparkles")
                     }
-                    Text("接入免费 agnes-ai，基于受限的文字/数值数据生成生活与学习洞察。AI 无权读取照片或照片分析结果。")
+                    Text("接入免费 agnes-ai，支持整个 App 的记录问答与洞察。照片只提供本机脱敏后的类别和通用标签聚合，不发送图像、人物信息或敏感元数据。")
                         .font(.footnote)
                 }
                 Section("关于与帮助") {

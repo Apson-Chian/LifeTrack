@@ -73,6 +73,11 @@ struct TravelArchiveView: View {
         .navigationTitle("旅行归档")
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                AssistantToolbarLink(context: .travel)
+            }
+        }
         .sheet(item: $editorTarget) { target in
             TravelArchiveEditorView(target: target)
         }
