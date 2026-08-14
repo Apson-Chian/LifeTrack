@@ -16,7 +16,7 @@ enum DataStoreManager {
 
     static var activeStoreURL: URL {
         ModelConfiguration(activeStoreName,
-                           schema: Schema(versionedSchema: LifeTrackSchemaV3.self),
+                           schema: Schema(versionedSchema: LifeTrackSchemaV4.self),
                            cloudKitDatabase: .none).url
     }
 
@@ -37,7 +37,7 @@ enum DataStoreManager {
     }
 
     private static func makeContainer(storeName: String) throws -> ModelContainer {
-        let schema = Schema(versionedSchema: LifeTrackSchemaV3.self)
+        let schema = Schema(versionedSchema: LifeTrackSchemaV4.self)
         let configuration = ModelConfiguration(storeName,
                                                schema: schema,
                                                cloudKitDatabase: .none)

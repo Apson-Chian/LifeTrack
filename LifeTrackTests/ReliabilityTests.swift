@@ -241,6 +241,34 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertEqual(course.weekRangesText, "1-12")
     }
 
+    func testRealisticStudentTimetableParsesStackedCellsAndRanges() throws {
+        // 复刻真实“河海大学学生个人课表”.xls 网格：同一单元格堆叠多门课，
+        // 且含逗号周次范围(1-3,5-11,13-18)与跨多小节(3-4-5节)写法。
+        let grid = [
+            ["", "周一", "周二", "周三", "周四", "周五", "周六", "周日"],
+            ["第一大节",
+             "\n编译原理\n邹阳\n2-11([周])[1-2节]\n地点A\n\n操作系统\n曹碧薇,张鹏程\n1-4([周])[3-4节]\n地点B\n",
+             "\n算法设计与分析\n唐斌,屈志昊\n1-3,5-11,13-18([周])[8-9节]\n地点C\n",
+             "",
+             "\n物联网技术与应用\n李旭杰\n1-8([周])[3-4-5节]\n地点D\n",
+             "", "", ""]
+        ]
+
+        let items = TimetableImportService.parseGrid(grid)
+        XCTAssertEqual(items.count, 4)
+
+        let algorithm = try XCTUnwrap(items.first { $0.name == "算法设计与分析" })
+        XCTAssertEqual(algorithm.weekday, 2)
+        XCTAssertEqual(algorithm.weekRangesText, "1-3,5-11,13-18")
+        XCTAssertEqual(algorithm.startMinutes, 15 * 60 + 50) // 第 8 小节开始
+        XCTAssertEqual(algorithm.endMinutes, 17 * 60 + 25)   // 第 9 小节结束
+
+        let iot = try XCTUnwrap(items.first { $0.name == "物联网技术与应用" })
+        XCTAssertEqual(iot.weekday, 4)
+        XCTAssertEqual(iot.startMinutes, 9 * 60 + 50)  // 第 3 小节开始
+        XCTAssertEqual(iot.endMinutes, 12 * 60 + 15)   // 第 5 小节结束
+    }
+
     func testJourneyRequiresSpatialContinuity() throws {
         let container = try makeContainer()
         let firstStart = Date(timeIntervalSince1970: 1_700_000_000)
@@ -351,8 +379,52 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertEqual(nodes.first?.photoIdentifiers, ["keep-me"])
     }
 
+    func testAgentToolsCannotReadPhotoData() {
+        let toolNames = Set(LifeAgentService.tools.map(\.name))
+        XCTAssertFalse(toolNames.contains { $0.localizedCaseInsensitiveContains("photo") })
+        XCTAssertEqual(toolNames, [
+            "get_activity_summary",
+            "get_stay_summary",
+            "get_schedule",
+            "get_study_stats",
+            "get_travel_archives"
+        ])
+    }
+
+    func testAgentSchemaMigratesFromV3ToV4() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agent-migration-\(UUID().uuidString).store")
+        defer { removeStoreFiles(at: url) }
+
+        let oldSchema = Schema(versionedSchema: LifeTrackSchemaV3.self)
+        var oldContainer: ModelContainer? = try ModelContainer(
+            for: oldSchema,
+            configurations: [ModelConfiguration("AgentV3", schema: oldSchema, url: url,
+                                                cloudKitDatabase: .none)]
+        )
+        oldContainer?.mainContext.insert(CustomPlace(shortName: "迁移保留地点",
+                                                      latitude: 31.2,
+                                                      longitude: 121.4))
+        try oldContainer?.mainContext.save()
+        oldContainer = nil
+
+        let currentSchema = Schema(versionedSchema: LifeTrackSchemaV4.self)
+        let migrated = try ModelContainer(
+            for: currentSchema,
+            migrationPlan: LifeTrackMigrationPlan.self,
+            configurations: [ModelConfiguration("AgentV4", schema: currentSchema, url: url,
+                                                cloudKitDatabase: .none)]
+        )
+        XCTAssertEqual(try migrated.mainContext.fetchCount(FetchDescriptor<CustomPlace>()), 1)
+        migrated.mainContext.insert(LifeInsightRecord(kind: InsightKind.dailyReflection.rawValue,
+                                                       title: "今日回顾",
+                                                       content: "测试内容"))
+        try migrated.mainContext.save()
+        XCTAssertEqual(try migrated.mainContext.fetchCount(FetchDescriptor<LifeInsightRecord>()), 1)
+    }
+
     private func makeContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: LifeTrackSchemaV3.self)
+        let schema = Schema(versionedSchema: LifeTrackSchemaV4.self)
         let configuration = ModelConfiguration(schema: schema,
                                                isStoredInMemoryOnly: true,
                                                cloudKitDatabase: .none)
@@ -364,7 +436,7 @@ final class ReliabilityTests: XCTestCase {
     private func withReadOnlyContainer<T>(_ body: (ModelContainer) throws -> T) throws -> T {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("readonly-\(UUID().uuidString).store")
-        let schema = Schema(versionedSchema: LifeTrackSchemaV3.self)
+        let schema = Schema(versionedSchema: LifeTrackSchemaV4.self)
         var writable: ModelContainer? = try ModelContainer(
             for: schema,
             migrationPlan: LifeTrackMigrationPlan.self,

@@ -19,6 +19,9 @@ struct RootView: View {
             PlacesView(locationService: locationService)
                 .tabItem { Label("地点", systemImage: "mappin.and.ellipse") }
 
+            InsightAssistantView()
+                .tabItem { Label("助手", systemImage: "sparkles") }
+
             SettingsView(locationService: locationService)
                 .tabItem { Label("设置", systemImage: "gearshape") }
         }

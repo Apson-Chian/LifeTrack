@@ -101,6 +101,15 @@ struct SettingsView: View {
                     Text("照片内容仅在设备本地进行分析；如果照片仅存储在 iCloud，系统可能从 iCloud 下载缩略图用于本地分析。LifeTrack 不会把原图上传到第三方服务器。")
                         .font(.footnote)
                 }
+                Section("AI 助手") {
+                    NavigationLink {
+                        AISettingsView()
+                    } label: {
+                        Label("AI 助手（agnes-ai）", systemImage: "sparkles")
+                    }
+                    Text("接入免费 agnes-ai，基于受限的文字/数值数据生成生活与学习洞察。AI 无权读取照片或照片分析结果。")
+                        .font(.footnote)
+                }
                 Section("关于与帮助") {
                     LabeledContent("版本", value: "\(version) (\(build))")
                     Button {

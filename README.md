@@ -75,6 +75,15 @@ LifeTrack
 
 Service 负责定位、轨迹分析、停留检测、GPX、备份、Journey 和旅行建议；SwiftUI View 只负责展示和用户操作。
 
+## AI 助手（agnes-ai）
+
+LifeTrack 可接入免费的 agnes-ai（OpenAI 兼容网关 `https://apihub.agnes-ai.com/v1`），把本机记录的生活/学习轨迹变成可阅读的洞察。
+
+- 在“设置 → AI 助手”中开启并填写 API Key（仅存于本机 Keychain）。
+- “助手”标签页可一键生成：今日回顾、本周复盘、学娱平衡、旅行手记。
+- 实现为一个**本地工具调用 Agent**：模型只通过工具读取本机 SwiftData 中的受限文字/数值数据（活动、停留、课表、学习停留、旅行归档），再生成自然语言总结。
+- **隐私红线**：Agent 工具不读取照片库或 `PhotoAnalysisRecord`。原图、缩略图、路径、标识符、位置元数据、本机分析标签和照片统计均不会交给 AI；Agnes 客户端消息结构也只携带 `String` 文本。
+
 ## 构建
 
 在 Xcode 中打开 `LifeTrack.xcodeproj`，选择 LifeTrack scheme 和有效的开发团队后构建。命令行无签名模拟器构建示例：

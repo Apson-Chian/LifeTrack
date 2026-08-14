@@ -335,7 +335,7 @@ struct PhotoLocationGalleryView: View {
                     featuredCount: 5,
                     spacing: 3,
                     onDelete: { item in
-                        try? await PhotoLibraryMutationService.deletePhoto(
+                        _ = try? await PhotoLibraryMutationService.deletePhoto(
                             assetIdentifier: item.assetIdentifier,
                             container: modelContext.container)
                     }

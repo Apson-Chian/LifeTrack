@@ -61,14 +61,17 @@ enum TimetableImportError: LocalizedError {
     case unreadable
     case unsupportedEncoding
     case noHeader
-    case noCourses
+    case noCourses(debug: String = "")
 
     var errorDescription: String? {
         switch self {
-        case .unreadable: "无法读取所选文件。"
-        case .unsupportedEncoding: "无法识别文件编码，请另存为 UTF-8 或 GBK 的 CSV。"
-        case .noHeader: "没有识别到表头，请确认 CSV 第一行包含“课程名称、星期、时间/节次”等列。"
-        case .noCourses: "没有解析到任何课程。请确认列内容格式，或尝试从教务导出日历(.ics)再导入。"
+        case .unreadable: return "无法读取所选文件。"
+        case .unsupportedEncoding: return "无法识别文件编码，请另存为 UTF-8 或 GBK 的 CSV。"
+        case .noHeader: return "没有识别到表头，请确认 CSV 第一行包含“课程名称、星期、时间/节次”等列。"
+        case .noCourses(let debug):
+            var msg = "没有解析到任何课程。请确认列内容格式，或尝试从教务导出日历(.ics)再导入。"
+            if !debug.isEmpty { msg += "\n\n诊断信息：\(debug)" }
+            return msg
         }
     }
 }
@@ -80,13 +83,21 @@ enum TimetableImportService {
         let didAccess = url.startAccessingSecurityScopedResource()
         defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
 
-        let data = try Data(contentsOf: url)
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            NSLog("[TimetableImport] 读取文件失败: \(error.localizedDescription)")
+            throw TimetableImportError.unreadable
+        }
         let ext = url.pathExtension.lowercased()
+        NSLog("[TimetableImport] 开始解析 ext=\(ext) bytes=\(data.count)")
 
         // 表格文件（.xls / .xlsx）：高校教务导出的“网格课表”
         if ext == "xls" || ext == "xlsx" {
             let items = try parseSpreadsheet(data)
-            guard !items.isEmpty else { throw TimetableImportError.noCourses }
+            NSLog("[TimetableImport] 网格解析结果 count=\(items.count)")
+            guard !items.isEmpty else { throw TimetableImportError.noCourses() }
             return items
         }
 
@@ -95,13 +106,20 @@ enum TimetableImportService {
 
         if ext == "ics" || trimmed.contains("BEGIN:VCALENDAR") {
             let items = parseICS(trimmed)
-            guard !items.isEmpty else { throw TimetableImportError.noCourses }
+            NSLog("[TimetableImport] ICS 解析结果 count=\(items.count)")
+            guard !items.isEmpty else {
+                throw TimetableImportError.noCourses(debug: "ICS 解析为 0 个事件，已读到文本长度 \(trimmed.count)。")
+            }
             return items
         }
 
         let items = parseCSV(trimmed)
+        NSLog("[TimetableImport] CSV 解析结果 count=\(items.count)")
         guard !items.isEmpty else {
-            throw csvRows(trimmed).isEmpty ? TimetableImportError.noCourses : TimetableImportError.noHeader
+            let reason = csvRows(trimmed).isEmpty
+                ? "文件无有效数据行。"
+                : "未识别到表头（需含“课程名/星期/时间”等列）。"
+            throw TimetableImportError.noCourses(debug: reason)
         }
         return items
     }
@@ -315,8 +333,36 @@ enum TimetableImportService {
     /// 读取表格文件（.xls/.xlsx）并解析为课程项。
     static func parseSpreadsheet(_ data: Data) throws -> [TimetableImportItem] {
         let sheets = try SpreadsheetReader.read(data: data)
-        guard let sheet = sheets.first, !sheet.grid.isEmpty else { throw TimetableImportError.noCourses }
-        return parseGrid(sheet.grid)
+        NSLog("[TimetableImport] 工作表数=\(sheets.count)")
+        guard let sheet = sheets.first, !sheet.grid.isEmpty else {
+            throw TimetableImportError.noCourses(debug: "表格已读取但内容为空（工作表数：\(sheets.count)）。")
+        }
+        let items = parseGrid(sheet.grid)
+        guard !items.isEmpty else {
+            throw TimetableImportError.noCourses(debug: gridDebug(sheet.grid))
+        }
+        return items
+    }
+
+    /// 解析失败时的诊断字符串：网格尺寸、星期表头命中数、样本单元格。
+    private static func gridDebug(_ grid: [[String]]) -> String {
+        let rows = grid.count
+        let cols = grid.map(\.count).max() ?? 0
+        var weekdayCells = 0
+        var nonEmpty = 0
+        var samples: [String] = []
+        for row in grid {
+            for cell in row {
+                let t = cell.trimmingCharacters(in: .whitespacesAndNewlines)
+                if t.isEmpty { continue }
+                nonEmpty += 1
+                if weekdayFromHeader(cell) != nil { weekdayCells += 1 }
+                if samples.count < 2 {
+                    samples.append(String(t.prefix(30)).replacingOccurrences(of: "\n", with: "⏎"))
+                }
+            }
+        }
+        return "网格 \(rows)×\(cols)，非空单元格 \(nonEmpty) 个，含星期文字的单元格 \(weekdayCells) 个；示例：「\(samples.joined(separator: " | "))」"
     }
 
     /// 解析“网格课表”：表头行定位星期列，逐格拆分多门课。
@@ -432,6 +478,10 @@ enum TimetableImportService {
             guard let summary = eventValue(event, key: "SUMMARY")?.trimmingCharacters(in: .whitespaces),
                   !summary.isEmpty else { continue }
             let location = eventValue(event, key: "LOCATION")?.trimmingCharacters(in: .whitespaces) ?? ""
+            // 自定义字段 X-WEEKS 携带“教学周”信息（如 "1-12"、"1-3,5-11,13-18"），
+            // 由课表转换工具写入，使 .ics 导入也能保留周次（GitHub 上多个高校转换项目均保留周次）。
+            let weekText = (eventValue(event, key: "X-WEEKS")?.trimmingCharacters(in: .whitespaces) ?? "")
+                .replacingOccurrences(of: "周", with: "")
             guard let start = eventTimeMinutes(event, key: "DTSTART"),
                   let end = eventTimeMinutes(event, key: "DTEND") else { continue }
             for weekday in eventWeekdays(event) {
@@ -439,7 +489,9 @@ enum TimetableImportService {
                                                  weekday: weekday,
                                                  startMinutes: start,
                                                  endMinutes: end,
-                                                 location: location))
+                                                 location: location,
+                                                 weekParity: 0,
+                                                 weekRangesText: weekText))
             }
         }
         return items
