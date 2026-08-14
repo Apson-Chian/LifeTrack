@@ -313,8 +313,8 @@ private struct TravelTimelineNodeRow: View {
                     if !node.photoIdentifiers.isEmpty {
                         HStack(spacing: 6) {
                             ForEach(Array(node.photoIdentifiers.prefix(3)), id: \.self) { identifier in
-                                PhotoThumbnailView(assetIdentifier: identifier, cornerRadius: 9)
-                                    .frame(width: 76, height: 76)
+                                PhotoSquareThumbnail(assetIdentifier: identifier, cornerRadius: 10)
+                                    .frame(width: 76)
                             }
                             if node.photoIdentifiers.count > 3 {
                                 Text("+\(node.photoIdentifiers.count - 3)")

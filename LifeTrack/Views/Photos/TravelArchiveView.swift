@@ -71,6 +71,8 @@ struct TravelArchiveView: View {
             }
         }
         .navigationTitle("旅行归档")
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .sheet(item: $editorTarget) { target in
             TravelArchiveEditorView(target: target)
         }
@@ -102,28 +104,63 @@ private struct TravelArchiveRow: View {
     let distance: Double
     let isSuggestion: Bool
 
+    private var accent: Color { isSuggestion ? .orange : .accentColor }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(title).font(.headline)
-                Spacer()
-                if isSuggestion {
-                    Text("待确认")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.orange)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Color.orange.opacity(0.1), in: Capsule())
+        HStack(alignment: .center, spacing: 14) {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(accent.gradient)
+                .frame(width: 5, height: 46)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(title)
+                        .font(.headline)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    if isSuggestion {
+                        Text("待确认")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.orange.opacity(0.12), in: Capsule())
+                    }
                 }
-            }
-            Text(dateRange)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Text("照片 \(photoCount) 张 · 地点 \(placeCount) 个 · \(Formatters.distance(distance))")
+
+                Text(dateRange)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 14) {
+                    stat(icon: "photo", value: "\(photoCount)")
+                    stat(icon: "mappin.and.ellipse", value: "\(placeCount)")
+                    stat(icon: "figure.hiking", value: Formatters.distance(distance))
+                }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            }
         }
-        .padding(.vertical, 4)
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(accent.opacity(isSuggestion ? 0.35 : 0.18), lineWidth: 1)
+        )
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
+    }
+
+    private func stat(icon: String, value: String) -> some View {
+        Label {
+            Text(value)
+        } icon: {
+            Image(systemName: icon)
+                .foregroundStyle(accent)
+        }
     }
 
     private var dateRange: String {
@@ -209,6 +246,7 @@ private struct TravelArchiveEditorView: View {
                                  currentLocation: nil,
                                  style: .vivid) { _ in }
                         .frame(height: 240)
+                        .overlay(alignment: .bottomLeading) { TrackSpeedLegend().padding(10) }
                         .listRowInsets(EdgeInsets())
                 } header: {
                     Text("旅行轨迹")

@@ -53,7 +53,7 @@ struct TimetableView: View {
                     Button {
                         showImportPicker = true
                     } label: {
-                        Label("从 CSV / 日历导入", systemImage: "square.and.arrow.down")
+                        Label("从 CSV / 表格导入", systemImage: "square.and.arrow.down")
                     }
                 } label: {
                     Image(systemName: "plus")
@@ -76,7 +76,9 @@ struct TimetableView: View {
                         .commaSeparatedText,
                         .plainText,
                         UTType(filenameExtension: "ics") ?? .text,
-                        UTType(filenameExtension: "csv") ?? .commaSeparatedText
+                        UTType(filenameExtension: "csv") ?? .commaSeparatedText,
+                        UTType(filenameExtension: "xls") ?? .spreadsheet,
+                        UTType(filenameExtension: "xlsx") ?? .spreadsheet
                       ]) { result in
             handleImport(result)
         }
@@ -166,8 +168,8 @@ private struct CourseRow: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            if course.weekParity != 0 {
-                Text(course.weekParity == 1 ? "单周" : "双周")
+            if course.weekParity != 0 || !course.weekRangesText.isEmpty {
+                Text(course.weekSummary)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.orange)
                     .padding(.horizontal, 6)
@@ -197,6 +199,7 @@ struct CourseEditorView: View {
     @State private var locationName = ""
     @State private var colorHex = "5E5CE6"
     @State private var weekParity = 0
+    @State private var weekRangesText = ""
     @State private var isEnabled = true
 
     private let weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -212,6 +215,7 @@ struct CourseEditorView: View {
         _locationName = State(initialValue: course?.locationName ?? "")
         _colorHex = State(initialValue: course?.colorHex ?? "5E5CE6")
         _weekParity = State(initialValue: course?.weekParity ?? 0)
+        _weekRangesText = State(initialValue: course?.weekRangesText ?? "")
         _isEnabled = State(initialValue: course?.isEnabled ?? true)
     }
 
@@ -242,6 +246,8 @@ struct CourseEditorView: View {
                         Text("单周").tag(1)
                         Text("双周").tag(2)
                     }
+                    TextField("教学周范围（可选，如 1-12、1-3,5-11,13-18、19）", text: $weekRangesText)
+                        .font(.footnote)
                     Toggle("启用该课程", isOn: $isEnabled)
                 }
                 if course != nil {
@@ -278,6 +284,7 @@ struct CourseEditorView: View {
         target.locationName = locationName.trimmingCharacters(in: .whitespacesAndNewlines)
         target.colorHex = colorHex
         target.weekParity = weekParity
+        target.weekRangesText = weekRangesText.trimmingCharacters(in: .whitespacesAndNewlines)
         target.isEnabled = isEnabled
         if course == nil { modelContext.insert(target) }
 
@@ -344,8 +351,8 @@ struct TimetableImportPreviewView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        if item.weekParity != 0 {
-                            Text(item.weekParity == 1 ? "单周" : "双周")
+                        if item.weekParity != 0 || !item.weekRangesText.isEmpty {
+                            Text(item.weekSummary)
                                 .font(.caption2.weight(.semibold))
                                 .foregroundStyle(.orange)
                                 .padding(.horizontal, 6)

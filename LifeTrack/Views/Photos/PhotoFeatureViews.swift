@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 import Photos
 import CoreLocation
 
@@ -86,7 +87,11 @@ struct PhotoPlacesView: View {
     @State private var selectedPhoto: PhotoDetailItem?
     @State private var hiddenAssetIdentifiers: Set<String> = []
 
-    private let columns = [GridItem(.adaptive(minimum: 96, maximum: 180), spacing: 4)]
+    // 两列更适合地点相册：照片有足够的观看尺寸，同时保持稳定的纵向节奏。
+    private let columns = [
+        GridItem(.flexible(), spacing: 10),
+        GridItem(.flexible(), spacing: 10)
+    ]
 
     init(points: [PhotoLocationPoint]) {
         let groups = PhotoLocationGroup.build(from: points)
@@ -111,54 +116,28 @@ struct PhotoPlacesView: View {
     var body: some View {
         ScrollView {
             if let selectedGroup {
-                VStack(alignment: .leading, spacing: 16) {
-                    TrackMapView(points: selectedMapPoints,
-                                 places: [],
-                                 currentLocation: nil,
-                                 cameraRequest: cameraRequest,
-                                 style: .photoDots) { _ in }
-                        .frame(height: 360)
-                        .clipShape(RoundedRectangle(cornerRadius: 16))
-                        .overlay(alignment: .topLeading) {
-                            Label(displayName(for: selectedGroup), systemImage: "mappin.and.ellipse")
-                                .font(.subheadline.weight(.semibold))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 9)
-                                .background(.ultraThinMaterial, in: Capsule())
-                                .padding(12)
-                        }
-
+                VStack(alignment: .leading, spacing: 20) {
+                    mapCard(for: selectedGroup)
                     locationSelector
+                    galleryHeader(for: selectedGroup)
 
-                    HStack(alignment: .firstTextBaseline) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(displayName(for: selectedGroup))
-                                .font(.title3.weight(.semibold))
-                            Text(selectedGroup.dateRangeText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Text("\(visiblePhotos.count) 张")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    LazyVGrid(columns: columns, spacing: 4) {
+                    LazyVGrid(columns: columns, spacing: 10) {
                         ForEach(visiblePhotos) { photo in
                             Button {
                                 selectedPhoto = PhotoDetailItem(assetIdentifier: photo.id,
                                                                 creationDate: photo.date,
                                                                 coordinate: photo.originalCoordinate)
                             } label: {
-                                PhotoGridThumbnail(assetIdentifier: photo.id)
+                                PhotoSquareThumbnail(assetIdentifier: photo.id)
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("查看 \(photo.date.formatted(date: .abbreviated, time: .shortened)) 的照片")
                         }
                     }
                 }
-                .padding()
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 112)
             } else {
                 ContentUnavailableView("暂无地点照片",
                                        systemImage: "photo.badge.exclamationmark",
@@ -168,6 +147,7 @@ struct PhotoPlacesView: View {
         }
         .navigationTitle("地点相册")
         .navigationBarTitleDisplayMode(.inline)
+        .background(Color(uiColor: .systemGroupedBackground))
         .task { await resolveGroupNames() }
         .onChange(of: selectedGroupID) { _, _ in
             cameraRequest = MapCameraRequest(target: .route)
@@ -184,30 +164,96 @@ struct PhotoPlacesView: View {
         }
     }
 
+    private func mapCard(for group: PhotoLocationGroup) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            TrackMapView(points: selectedMapPoints,
+                         places: [],
+                         currentLocation: nil,
+                         cameraRequest: cameraRequest,
+                         style: .photoDots) { _ in }
+                .frame(height: 250)
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+
+            LinearGradient(colors: [.clear, .black.opacity(0.62)],
+                           startPoint: .top,
+                           endPoint: .bottom)
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 5) {
+                Label(displayName(for: group), systemImage: "mappin.and.ellipse")
+                    .font(.headline.weight(.semibold))
+                    .lineLimit(1)
+                Text("照片拍摄位置")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.78))
+            }
+            .foregroundStyle(.white)
+            .padding(18)
+        }
+        .overlay(alignment: .topTrailing) {
+            Button {
+                cameraRequest = MapCameraRequest(target: .route)
+            } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 38, height: 38)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(12)
+            .accessibilityLabel("适配全部照片位置")
+        }
+        .shadow(color: .black.opacity(0.12), radius: 16, y: 8)
+    }
+
+    private func galleryHeader(for group: PhotoLocationGroup) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("照片")
+                    .font(.title3.weight(.bold))
+                Text(group.dateRangeText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 12)
+            Text("\(visiblePhotos.count) 张")
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+    }
+
     private var locationSelector: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(groups) { group in
-                    Button {
-                        selectedGroupID = group.id
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(displayName(for: group))
-                                .font(.subheadline.weight(.semibold))
-                                .lineLimit(1)
-                            Text("\(visiblePhotoCount(for: group)) 张")
-                                .font(.caption)
-                                .foregroundStyle(selectedGroupID == group.id ? .white.opacity(0.8) : .secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            Text("地点")
+                .font(.headline)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(groups) { group in
+                        Button {
+                            selectedGroupID = group.id
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(displayName(for: group))
+                                    .font(.subheadline.weight(.semibold))
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                Text("\(visiblePhotoCount(for: group)) 张")
+                                    .font(.caption)
+                                    .foregroundStyle(selectedGroupID == group.id ? .white.opacity(0.8) : .secondary)
+                            }
+                            .foregroundStyle(selectedGroupID == group.id ? .white : .primary)
+                            .frame(width: 148, alignment: .leading)
+                            .padding(.horizontal, 13)
+                            .padding(.vertical, 9)
+                            .background(selectedGroupID == group.id ? Color.accentColor : Color(uiColor: .secondarySystemBackground), in: Capsule())
                         }
-                        .foregroundStyle(selectedGroupID == group.id ? .white : .primary)
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 9)
-                        .background(selectedGroupID == group.id ? Color.accentColor : Color(uiColor: .secondarySystemBackground), in: Capsule())
-                    }
-                    .buttonStyle(.plain)
+                        .buttonStyle(.plain)
                 }
             }
         }
+    }
     }
 
     private func displayName(for group: PhotoLocationGroup) -> String {
@@ -233,25 +279,24 @@ struct PhotoLocationGalleryView: View {
     let title: String
     let points: [PhotoLocationPoint]
 
-    @State private var selectedPhoto: PhotoDetailItem?
-    @State private var hiddenAssetIdentifiers: Set<String> = []
+    @Environment(\.modelContext) private var modelContext
     @State private var cameraRequest: MapCameraRequest?
 
-    private let columns = [GridItem(.adaptive(minimum: 96, maximum: 180), spacing: 4)]
-
-    private var visiblePoints: [PhotoLocationPoint] {
+    private var sortedItems: [PhotoDetailItem] {
         points
-            .filter { !hiddenAssetIdentifiers.contains($0.id) }
             .sorted { $0.date > $1.date }
+            .map { PhotoDetailItem(assetIdentifier: $0.id,
+                                   creationDate: $0.date,
+                                   coordinate: $0.originalCoordinate) }
     }
 
     private var mapPoints: [TrackMapPoint] {
-        visiblePoints.map(\.mapPoint)
+        points.map(\.mapPoint)
     }
 
     private var dateRangeText: String {
-        guard let first = visiblePoints.last?.date,
-              let last = visiblePoints.first?.date else { return "--" }
+        guard let first = points.last?.date,
+              let last = points.first?.date else { return "--" }
         if Calendar.current.isDate(first, inSameDayAs: last) {
             return first.formatted(.dateTime.year().month().day())
         }
@@ -280,23 +325,21 @@ struct PhotoLocationGalleryView: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Text("\(visiblePoints.count) 张")
+                    Text("\(points.count) 张")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
 
-                LazyVGrid(columns: columns, spacing: 4) {
-                    ForEach(visiblePoints) { photo in
-                        Button {
-                            selectedPhoto = PhotoDetailItem(assetIdentifier: photo.id,
-                                                            creationDate: photo.date,
-                                                            coordinate: photo.originalCoordinate)
-                        } label: {
-                            PhotoGridThumbnail(assetIdentifier: photo.id)
-                        }
-                        .buttonStyle(.plain)
+                PhotoGalleryContentView(
+                    items: sortedItems,
+                    featuredCount: 5,
+                    spacing: 3,
+                    onDelete: { item in
+                        try? await PhotoLibraryMutationService.deletePhoto(
+                            assetIdentifier: item.assetIdentifier,
+                            container: modelContext.container)
                     }
-                }
+                )
             }
             .padding()
         }
@@ -305,11 +348,6 @@ struct PhotoLocationGalleryView: View {
         .onAppear {
             if !mapPoints.isEmpty {
                 cameraRequest = MapCameraRequest(target: .route)
-            }
-        }
-        .sheet(item: $selectedPhoto) { item in
-            PhotoDetailView(item: item) { identifier in
-                hiddenAssetIdentifiers.insert(identifier)
             }
         }
     }
@@ -536,8 +574,8 @@ private struct PhotoTimelineDayRow: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(day.assets.prefix(12)) { asset in
-                            PhotoThumbnailView(assetIdentifier: asset.id, cornerRadius: 8)
-                                .frame(width: 86, height: 86)
+                                PhotoSquareThumbnail(assetIdentifier: asset.id, cornerRadius: 10)
+                                    .frame(width: 86)
                         }
                     }
                 }
@@ -556,16 +594,29 @@ struct PhotoThumbnailView: View {
 
     var body: some View {
         ZStack {
-            Color(uiColor: .secondarySystemBackground)
             if let image {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
             } else {
+                // 渐变占位背景，比纯灰好看
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(uiColor: .tertiarySystemBackground),
+                                Color(uiColor: .secondarySystemBackground)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
                 Image(systemName: "photo")
-                    .foregroundStyle(.tertiary)
+                    .font(.title3)
+                    .foregroundStyle(.quaternary)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
         .onAppear(perform: requestImage)
@@ -579,6 +630,7 @@ struct PhotoThumbnailView: View {
 
     private func requestImage() {
         guard image == nil,
+              !assetIdentifier.isEmpty,
               let asset = PHAsset.fetchAssets(withLocalIdentifiers: [assetIdentifier], options: nil).firstObject else { return }
 
         let options = PHImageRequestOptions()

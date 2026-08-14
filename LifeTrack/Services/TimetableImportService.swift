@@ -16,13 +16,15 @@ struct TimetableImportItem: Identifiable, Equatable {
     var endMinutes: Int
     var location: String
     var weekParity: Int       // 0=每周 1=单周 2=双周
+    var weekRangesText: String // 有效教学周文本，例如 "1-12"、"1-3,5-11,13-18"、"19"；空=每周
 
     init(name: String,
          weekday: Int,
          startMinutes: Int,
          endMinutes: Int,
          location: String = "",
-         weekParity: Int = 0) {
+         weekParity: Int = 0,
+         weekRangesText: String = "") {
         self.id = UUID()
         self.name = name
         self.weekday = weekday
@@ -30,6 +32,7 @@ struct TimetableImportItem: Identifiable, Equatable {
         self.endMinutes = endMinutes
         self.location = location
         self.weekParity = weekParity
+        self.weekRangesText = weekRangesText
     }
 
     func makeCourse() -> CourseEvent {
@@ -38,7 +41,19 @@ struct TimetableImportItem: Identifiable, Equatable {
                     endMinutes: endMinutes,
                     name: name,
                     locationName: location,
-                    weekParity: weekParity)
+                    weekParity: weekParity,
+                    weekRangesText: weekRangesText)
+    }
+
+    /// 周次摘要，例如“1-12周”“1-3,5-11,13-18周”“19周”“单周”“每周”。
+    var weekSummary: String {
+        let t = weekRangesText.trimmingCharacters(in: .whitespaces)
+        if !t.isEmpty { return t + "周" }
+        switch weekParity {
+        case 1: return "单周"
+        case 2: return "双周"
+        default: return "每周"
+        }
     }
 }
 
@@ -66,10 +81,19 @@ enum TimetableImportService {
         defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
 
         let data = try Data(contentsOf: url)
+        let ext = url.pathExtension.lowercased()
+
+        // 表格文件（.xls / .xlsx）：高校教务导出的“网格课表”
+        if ext == "xls" || ext == "xlsx" {
+            let items = try parseSpreadsheet(data)
+            guard !items.isEmpty else { throw TimetableImportError.noCourses }
+            return items
+        }
+
         guard let text = decode(data) else { throw TimetableImportError.unsupportedEncoding }
         let trimmed = text.trimmingCharacters(in: CharacterSet(charactersIn: "\u{FEFF}\n\r "))
 
-        if url.pathExtension.lowercased() == "ics" || trimmed.contains("BEGIN:VCALENDAR") {
+        if ext == "ics" || trimmed.contains("BEGIN:VCALENDAR") {
             let items = parseICS(trimmed)
             guard !items.isEmpty else { throw TimetableImportError.noCourses }
             return items
@@ -268,6 +292,114 @@ enum TimetableImportService {
         if v.contains("单") { return 1 }
         if v.contains("双") { return 2 }
         return 0
+    }
+
+    // MARK: - 网格课表（.xls / .xlsx，高校教务导出）
+
+    /// 河海大学默认“小节→时间”表（1–12 小节）。每门课自带小节范围，据此换算起止时间。
+    private static let gridSectionTimes: [(start: Int, end: Int)] = [
+        (8 * 60,        8 * 60 + 45),    // 1
+        (8 * 60 + 50,   9 * 60 + 35),    // 2
+        (9 * 60 + 50,  10 * 60 + 35),    // 3
+        (10 * 60 + 40, 11 * 60 + 25),    // 4
+        (11 * 60 + 30, 12 * 60 + 15),    // 5
+        (14 * 60,       14 * 60 + 45),   // 6
+        (14 * 60 + 50, 15 * 60 + 35),    // 7
+        (15 * 60 + 50, 16 * 60 + 35),    // 8
+        (16 * 60 + 40, 17 * 60 + 25),    // 9
+        (18 * 60 + 30, 19 * 60 + 15),    // 10
+        (19 * 60 + 20, 20 * 60 + 5),     // 11
+        (20 * 60 + 10, 20 * 60 + 55)     // 12
+    ]
+
+    /// 读取表格文件（.xls/.xlsx）并解析为课程项。
+    static func parseSpreadsheet(_ data: Data) throws -> [TimetableImportItem] {
+        let sheets = try SpreadsheetReader.read(data: data)
+        guard let sheet = sheets.first, !sheet.grid.isEmpty else { throw TimetableImportError.noCourses }
+        return parseGrid(sheet.grid)
+    }
+
+    /// 解析“网格课表”：表头行定位星期列，逐格拆分多门课。
+    static func parseGrid(_ grid: [[String]]) -> [TimetableImportItem] {
+        // 1) 定位星期表头行与列映射
+        var weekdayColumns: [Int: Int] = [:]
+        var headerRow = -1
+        for (r, row) in grid.enumerated() {
+            var map: [Int: Int] = [:]
+            for (c, cell) in row.enumerated() where !cell.isEmpty {
+                if let wd = weekdayFromHeader(cell) { map[c] = wd }
+            }
+            if map.count >= 5 { weekdayColumns = map; headerRow = r; break }
+        }
+        guard !weekdayColumns.isEmpty else { return [] }
+
+        // 2) 逐行逐列解析课程（含同一格内的多门课）
+        var items: [TimetableImportItem] = []
+        for r in (headerRow + 1)..<grid.count {
+            let row = grid[r]
+            for (c, weekday) in weekdayColumns {
+                guard c < row.count else { continue }
+                let cell = row[c]
+                guard !cell.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                items.append(contentsOf: parseCellCourses(cell, weekday: weekday))
+            }
+        }
+        return items
+    }
+
+    private static func weekdayFromHeader(_ cell: String) -> Int? {
+        let v = cell.trimmingCharacters(in: .whitespaces)
+        if v.contains("一") { return 1 }
+        if v.contains("二") { return 2 }
+        if v.contains("三") { return 3 }
+        if v.contains("四") { return 4 }
+        if v.contains("五") { return 5 }
+        if v.contains("六") { return 6 }
+        if v.contains("日") || v.contains("天") { return 7 }
+        return nil
+    }
+
+    /// 将一格内的课程（每行 4 段：名称 / 教师 / 周次小节 / 地点，多门课堆叠）解析为课程项。
+    private static func parseCellCourses(_ cell: String, weekday: Int) -> [TimetableImportItem] {
+        let lines = cell.components(separatedBy: "\n")
+        var items: [TimetableImportItem] = []
+        let regex = try? NSRegularExpression(pattern: #"([\d,\-]+)\(\[周\]\)\[([\d\-]+)节\]"#)
+        guard let regex else { return items }
+        for i in 0..<lines.count {
+            let line = lines[i]
+            guard let m = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+                  let wRange = Range(m.range(at: 1), in: line),
+                  let sRange = Range(m.range(at: 2), in: line) else { continue }
+            guard i - 2 >= 0, i + 1 < lines.count else { continue }
+            let name = lines[i - 2].trimmingCharacters(in: .whitespacesAndNewlines)
+            let location = lines[i + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { continue }
+
+            let weeksText = String(line[wRange]).trimmingCharacters(in: .whitespaces)
+            let sectionsText = String(line[sRange])
+            let secParts = sectionsText.components(separatedBy: "-").compactMap { Int($0) }
+            guard let minSec = secParts.min(), let maxSec = secParts.max(),
+                  minSec >= 1, maxSec <= gridSectionTimes.count, maxSec >= minSec else { continue }
+
+            let start = gridSectionTimes[minSec - 1].start
+            let end = gridSectionTimes[maxSec - 1].end
+            items.append(TimetableImportItem(name: name,
+                                             weekday: weekday,
+                                             startMinutes: start,
+                                             endMinutes: end,
+                                             location: location,
+                                             weekParity: 0,
+                                             weekRangesText: normalizeWeekRanges(weeksText)))
+        }
+        return items
+    }
+
+    /// 规整周次文本：去空格、统一全角连字符为半角。
+    private static func normalizeWeekRanges(_ text: String) -> String {
+        text.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "－", with: "-")
+            .replacingOccurrences(of: "，", with: ",")
+            .replacingOccurrences(of: " ", with: "")
     }
 
     /// 默认“节次→时间”表（常见高校作息，可在导入后按学校实际调整）。

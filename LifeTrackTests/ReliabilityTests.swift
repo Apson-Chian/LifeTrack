@@ -180,7 +180,7 @@ final class ReliabilityTests: XCTestCase {
         try legacyContainer?.mainContext.save()
         legacyContainer = nil
 
-        let versionedSchema = Schema(versionedSchema: LifeTrackSchemaV1.self)
+        let versionedSchema = Schema(versionedSchema: LifeTrackSchemaV3.self)
         let migrated = try ModelContainer(
             for: versionedSchema,
             migrationPlan: LifeTrackMigrationPlan.self,
@@ -188,6 +188,57 @@ final class ReliabilityTests: XCTestCase {
                                                 cloudKitDatabase: .none)]
         )
         XCTAssertEqual(try migrated.mainContext.fetchCount(FetchDescriptor<CustomPlace>()), 1)
+    }
+
+    func testCourseSchemaMigratesFromV2ToV3() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("course-migration-\(UUID().uuidString).store")
+        defer { removeStoreFiles(at: url) }
+
+        let oldSchema = Schema(versionedSchema: LifeTrackSchemaV2.self)
+        var oldContainer: ModelContainer? = try ModelContainer(
+            for: oldSchema,
+            configurations: [ModelConfiguration("CourseV2", schema: oldSchema, url: url,
+                                                cloudKitDatabase: .none)]
+        )
+        oldContainer?.mainContext.insert(LifeTrackSchemaV2.CourseEvent(weekday: 1,
+                                                                       startMinutes: 8 * 60,
+                                                                       endMinutes: 9 * 60 + 35,
+                                                                       name: "高等数学",
+                                                                       locationName: "博学楼101"))
+        try oldContainer?.mainContext.save()
+        oldContainer = nil
+
+        let currentSchema = Schema(versionedSchema: LifeTrackSchemaV3.self)
+        let migrated = try ModelContainer(
+            for: currentSchema,
+            migrationPlan: LifeTrackMigrationPlan.self,
+            configurations: [ModelConfiguration("CourseV3", schema: currentSchema, url: url,
+                                                cloudKitDatabase: .none)]
+        )
+        let courses = try migrated.mainContext.fetch(FetchDescriptor<CourseEvent>())
+        XCTAssertEqual(courses.count, 1)
+        XCTAssertEqual(courses[0].name, "高等数学")
+        XCTAssertEqual(courses[0].weekStart, 1)
+        XCTAssertEqual(courses[0].weekEnd, 18)
+        XCTAssertEqual(courses[0].weekRangesText, "")
+    }
+
+    func testGridTimetableParsesCourseWeeksAndSectionTimes() throws {
+        let grid = [
+            ["节次", "周一", "周二", "周三", "周四", "周五", "周六", "周日"],
+            ["1-2", "高等数学\n张老师\n1-12([周])[1-2节]\n博学楼101", "", "", "", "", "", ""]
+        ]
+
+        let items = TimetableImportService.parseGrid(grid)
+        let course = try XCTUnwrap(items.first)
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(course.name, "高等数学")
+        XCTAssertEqual(course.weekday, 1)
+        XCTAssertEqual(course.startMinutes, 8 * 60)
+        XCTAssertEqual(course.endMinutes, 9 * 60 + 35)
+        XCTAssertEqual(course.location, "博学楼101")
+        XCTAssertEqual(course.weekRangesText, "1-12")
     }
 
     func testJourneyRequiresSpatialContinuity() throws {
@@ -301,7 +352,7 @@ final class ReliabilityTests: XCTestCase {
     }
 
     private func makeContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: LifeTrackSchemaV1.self)
+        let schema = Schema(versionedSchema: LifeTrackSchemaV3.self)
         let configuration = ModelConfiguration(schema: schema,
                                                isStoredInMemoryOnly: true,
                                                cloudKitDatabase: .none)
@@ -313,7 +364,7 @@ final class ReliabilityTests: XCTestCase {
     private func withReadOnlyContainer<T>(_ body: (ModelContainer) throws -> T) throws -> T {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("readonly-\(UUID().uuidString).store")
-        let schema = Schema(versionedSchema: LifeTrackSchemaV1.self)
+        let schema = Schema(versionedSchema: LifeTrackSchemaV3.self)
         var writable: ModelContainer? = try ModelContainer(
             for: schema,
             migrationPlan: LifeTrackMigrationPlan.self,

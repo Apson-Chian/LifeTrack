@@ -304,6 +304,7 @@ private struct JourneyDetailView: View {
                     TrackMapView(points: mapPoints, places: places, currentLocation: nil) { _ in }
                         .frame(height: 290)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(alignment: .bottomLeading) { TrackSpeedLegend().padding(10) }
                         .padding(.horizontal)
                 }
 
@@ -385,6 +386,7 @@ struct SessionDetailView: View {
                 TrackMapView(points: mapPoints, places: places, currentLocation: nil) { _ in }
                     .frame(height: 290)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(alignment: .bottomLeading) { TrackSpeedLegend().padding(10) }
                 Grid(horizontalSpacing: 10, verticalSpacing: 10) {
                     GridRow {
                         StatisticTile(title: "距离", value: Formatters.distance(session.distance), symbol: "arrow.left.and.right")

@@ -522,56 +522,30 @@ struct SmartCategoryPhotosView: View {
     let category: PhotoSmartCategory
     let records: [PhotoAnalysisRecord]
 
-    @State private var selectedPhoto: PhotoDetailItem?
-    @State private var hiddenAssetIdentifiers: Set<String> = []
+    @Environment(\.modelContext) private var modelContext
 
-    private let columns = [GridItem(.adaptive(minimum: 96, maximum: 180), spacing: 4)]
-
-    private var visibleRecords: [PhotoAnalysisRecord] {
+    private var sortedItems: [PhotoDetailItem] {
         records
-            .filter { !hiddenAssetIdentifiers.contains($0.assetIdentifier) }
             .sorted { $0.creationDate > $1.creationDate }
+            .map { PhotoDetailItem(record: $0) }
     }
 
     var body: some View {
         ScrollView {
-            if visibleRecords.isEmpty {
-                ContentUnavailableView("暂无照片",
-                                       systemImage: category.symbolName,
-                                       description: Text("该分类中没有仍可访问的照片。"))
-                    .frame(minHeight: 420)
-            } else {
-                LazyVGrid(columns: columns, spacing: 4) {
-                    ForEach(visibleRecords) { record in
-                        Button {
-                            selectedPhoto = PhotoDetailItem(record: record)
-                        } label: {
-                            ZStack(alignment: .bottomLeading) {
-                                PhotoGridThumbnail(assetIdentifier: record.assetIdentifier)
-                                if record.linkedSessionID != nil {
-                                    Image(systemName: "point.3.connected.trianglepath.dotted")
-                                        .font(.caption2.weight(.bold))
-                                        .foregroundStyle(.white)
-                                        .padding(5)
-                                        .background(.black.opacity(0.48), in: Circle())
-                                        .padding(5)
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("查看 \(record.creationDate.formatted(date: .abbreviated, time: .shortened)) 的照片")
-                    }
+            PhotoGalleryContentView(
+                items: sortedItems,
+                featuredCount: 5,
+                spacing: 3,
+                linkedBadge: true,
+                onDelete: { item in
+                    try? await PhotoLibraryMutationService.deletePhoto(
+                        assetIdentifier: item.assetIdentifier,
+                        container: modelContext.container)
                 }
-                .padding(4)
-            }
+            )
         }
-        .navigationTitle("\(category.title) · \(visibleRecords.count)")
+        .navigationTitle("\(category.title) · \(records.count)")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(item: $selectedPhoto) { item in
-            PhotoDetailView(item: item) { identifier in
-                hiddenAssetIdentifiers.insert(identifier)
-            }
-        }
     }
 }
 
@@ -629,12 +603,13 @@ private struct SmartTravelAlbumCard: View {
     let placeName: String?
 
     var body: some View {
-        HStack(spacing: 13) {
-            PhotoThumbnailView(assetIdentifier: album.records.first?.assetIdentifier ?? "",
-                               cornerRadius: 12)
-                .frame(width: 92, height: 92)
+        HStack(spacing: 14) {
+            // 封面先锁定正方形，再让图片填充，避免长图撑坏相册卡片。
+            PhotoSquareThumbnail(assetIdentifier: album.records.first?.assetIdentifier ?? "",
+                                 cornerRadius: 14)
+                .frame(width: 92)
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 5) {
                 Text(placeName ?? album.title)
                     .font(.headline)
                     .foregroundStyle(.primary)
@@ -644,19 +619,20 @@ private struct SmartTravelAlbumCard: View {
                     .foregroundStyle(.secondary)
                 HStack(spacing: 10) {
                     Label("\(album.records.count) 张", systemImage: "photo.stack")
+                        .foregroundStyle(.secondary)
                     if album.linkedSessionCount > 0 {
                         Label("\(album.linkedSessionCount) 段轨迹", systemImage: "point.3.connected.trianglepath.dotted")
+                            .foregroundStyle(.indigo)
                     }
                 }
                 .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
             }
-            Spacer(minLength: 4)
+            Spacer(minLength: 0)
             Image(systemName: "chevron.right")
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.quaternary)
         }
-        .padding(12)
+        .padding(14)
         .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
     }
 }
@@ -664,19 +640,16 @@ private struct SmartTravelAlbumCard: View {
 struct SmartTravelAlbumDetailView: View {
     let album: SmartTravelAlbum
 
-    @State private var selectedPhoto: PhotoDetailItem?
-    @State private var hiddenAssetIdentifiers: Set<String> = []
+    @Environment(\.modelContext) private var modelContext
 
-    private let columns = [GridItem(.adaptive(minimum: 96, maximum: 180), spacing: 4)]
-
-    private var visibleRecords: [PhotoAnalysisRecord] {
+    private var sortedItems: [PhotoDetailItem] {
         album.records
-            .filter { !hiddenAssetIdentifiers.contains($0.assetIdentifier) }
             .sorted { $0.creationDate > $1.creationDate }
+            .map { PhotoDetailItem(record: $0) }
     }
 
     private var photoMapPoints: [TrackMapPoint] {
-        visibleRecords.compactMap { record in
+        album.records.compactMap { record in
             guard let latitude = record.latitude, let longitude = record.longitude else { return nil }
             return TrackMapPoint(coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
                                  timestamp: record.creationDate,
@@ -715,26 +688,22 @@ struct SmartTravelAlbumDetailView: View {
                     }
                 }
 
-                LazyVGrid(columns: columns, spacing: 4) {
-                    ForEach(visibleRecords) { record in
-                        Button {
-                            selectedPhoto = PhotoDetailItem(record: record)
-                        } label: {
-                            PhotoGridThumbnail(assetIdentifier: record.assetIdentifier)
-                        }
-                        .buttonStyle(.plain)
+                PhotoGalleryContentView(
+                    items: sortedItems,
+                    featuredCount: 5,
+                    spacing: 3,
+                    linkedBadge: true,
+                    onDelete: { item in
+                        try? await PhotoLibraryMutationService.deletePhoto(
+                            assetIdentifier: item.assetIdentifier,
+                            container: modelContext.container)
                     }
-                }
+                )
             }
             .padding()
         }
         .navigationTitle("旅行相册")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(item: $selectedPhoto) { item in
-            PhotoDetailView(item: item) { identifier in
-                hiddenAssetIdentifiers.insert(identifier)
-            }
-        }
     }
 }
 

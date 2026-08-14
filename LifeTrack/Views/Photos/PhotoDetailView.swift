@@ -121,25 +121,35 @@ struct PhotoDetailView: View {
     }
 
     private var photo: some View {
-        ZStack {
-            Color.black
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity)
-            } else if isLoading {
-                ProgressView("正在读取照片…")
-                    .tint(.white)
-                    .foregroundStyle(.white)
-            } else {
-                ContentUnavailableView("照片不可用",
-                                       systemImage: "photo.badge.exclamationmark",
-                                       description: Text("照片可能已被删除，或不在当前授权范围内。"))
-                    .foregroundStyle(.white)
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            let ratio = photoAspectRatio
+            let height = max(width * ratio, 200)
+            ZStack {
+                Color.black
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: width, height: height)
+                } else if isLoading {
+                    ProgressView("正在读取照片…")
+                        .tint(.white)
+                        .foregroundStyle(.white)
+                } else {
+                    ContentUnavailableView("照片不可用",
+                                           systemImage: "photo.badge.exclamationmark",
+                                           description: Text("照片可能已被删除，或不在当前授权范围内。"))
+                        .foregroundStyle(.white)
+                }
             }
+            .frame(width: width, height: height)
         }
-        .frame(maxWidth: .infinity, minHeight: 300)
+    }
+
+    private var photoAspectRatio: CGFloat {
+        guard let metadata, metadata.pixelWidth > 0, metadata.pixelHeight > 0 else { return 1 }
+        return CGFloat(metadata.pixelHeight) / CGFloat(metadata.pixelWidth)
     }
 
     private var information: some View {
@@ -292,12 +302,9 @@ struct PhotoGridThumbnail: View {
     var cornerRadius: CGFloat = 5
 
     var body: some View {
-        Color.clear
-            .aspectRatio(1, contentMode: .fit)
-            .overlay {
-                PhotoThumbnailView(assetIdentifier: assetIdentifier,
-                                   cornerRadius: cornerRadius)
-            }
+        PhotoThumbnailView(assetIdentifier: assetIdentifier,
+                           cornerRadius: cornerRadius)
+            .aspectRatio(1, contentMode: .fill)
             .contentShape(Rectangle())
     }
 }

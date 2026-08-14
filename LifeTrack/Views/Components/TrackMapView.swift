@@ -7,6 +7,7 @@ struct TrackMapView: UIViewRepresentable {
     var currentLocation: CLLocation?
     var cameraRequest: MapCameraRequest?
     var style: TrackMapStyle = .standard
+    var colorMode: TrackColorMode = .speed
     var focusedCoordinate: CLLocationCoordinate2D? = nil
     var onLongPress: (CLLocationCoordinate2D) -> Void
 
@@ -48,9 +49,15 @@ struct TrackMapView: UIViewRepresentable {
             map.addAnnotation(annotation)
             map.addOverlay(MKCircle(center: annotation.coordinate, radius: place.radius))
         }
-        if !context.coordinator.hasSetInitialRegion,
-           let coordinate = displayCoordinates.last ?? currentLocation?.coordinate {
-            map.setRegion(MKCoordinateRegion(center: coordinate, latitudinalMeters: 1_000, longitudinalMeters: 1_000), animated: false)
+        if !context.coordinator.hasSetInitialRegion {
+            if !displayCoordinates.isEmpty {
+                let fitPolyline = MKPolyline(coordinates: displayCoordinates, count: displayCoordinates.count)
+                map.setVisibleMapRect(fitPolyline.boundingMapRect,
+                                      edgePadding: UIEdgeInsets(top: 48, left: 36, bottom: 56, right: 36),
+                                      animated: false)
+            } else if let coordinate = currentLocation?.coordinate {
+                map.setRegion(MKCoordinateRegion(center: coordinate, latitudinalMeters: 1_000, longitudinalMeters: 1_000), animated: false)
+            }
             context.coordinator.hasSetInitialRegion = true
         }
         applyCameraRequestIfNeeded(to: map, coordinates: displayCoordinates, coordinator: context.coordinator)
@@ -64,6 +71,10 @@ struct TrackMapView: UIViewRepresentable {
             map.overrideUserInterfaceStyle = .unspecified
             map.tintColor = .systemBlue
             map.pointOfInterestFilter = .includingAll
+            // 使用真实感地形，让轨迹更有层次
+            if let standard = map.preferredConfiguration as? MKStandardMapConfiguration {
+                standard.elevationStyle = .realistic
+            }
         case .vivid:
             map.overrideUserInterfaceStyle = .dark
             map.tintColor = UIColor(red: 0.45, green: 0.78, blue: 1.0, alpha: 1)
@@ -83,7 +94,7 @@ struct TrackMapView: UIViewRepresentable {
 
     private func displaySegments(for points: [TrackMapPoint], coordinator: Coordinator, map: MKMapView) -> [TrackDisplaySegment] {
         let rawSegments = TrackDisplaySegment.build(from: points)
-        guard style == .vivid else { return rawSegments }
+        guard style != .photoDots else { return rawSegments }
         for segment in rawSegments where segment.shouldSnapToRoad {
             coordinator.requestRoadMatch(for: segment, on: map)
         }
@@ -96,7 +107,8 @@ struct TrackMapView: UIViewRepresentable {
                                        startTimestamp: segment.startTimestamp,
                                        endTimestamp: segment.endTimestamp,
                                        distance: segment.distance,
-                                       averageSpeed: segment.averageSpeed)
+                                       averageSpeed: segment.averageSpeed,
+                                       speeds: Array(repeating: segment.averageSpeed, count: snapped.count))
         }
     }
 
@@ -113,24 +125,59 @@ struct TrackMapView: UIViewRepresentable {
         switch style {
         case .standard:
             guard !segments.isEmpty, coordinates.count > 1 else { return }
-            for segment in segments where segment.coordinates.count > 1 {
-                addPolyline(segment.coordinates, color: UIColor(segment.activityType.trackColor), lineWidth: 5, to: map, coordinator: coordinator)
+            if colorMode == .speed {
+                // 速度渐变模式：先画一层半透明粗线作为发光底衬，再画渐变细线
+                for segment in segments where segment.coordinates.count > 1 {
+                    addPolyline(segment.coordinates,
+                               color: UIColor(red: 0.25, green: 0.45, blue: 0.95, alpha: 0.18),
+                               lineWidth: 14, to: map, coordinator: coordinator)
+                }
+                map.addOverlay(TrackGradientOverlay(segments: gradientSegments(from: segments), lineWidth: 5), level: .aboveRoads)
+            } else {
+                // 活动类型单色模式：粗线 + 同色发光底衬
+                for segment in segments where segment.coordinates.count > 1 {
+                    let color = UIColor(segment.activityType.trackColor)
+                    addPolyline(segment.coordinates, color: color.withAlphaComponent(0.15), lineWidth: 14, to: map, coordinator: coordinator)
+                    addPolyline(segment.coordinates, color: color.withAlphaComponent(0.9), lineWidth: 6, to: map, coordinator: coordinator)
+                }
             }
         case .vivid:
             guard !segments.isEmpty, coordinates.count > 1 else { return }
             map.addOverlay(TrackDarkOverlay(coordinates: coordinates), level: .aboveRoads)
-            for segment in segments where segment.coordinates.count > 1 {
-                let color = UIColor(segment.activityType.trackColor)
-                addPolyline(segment.coordinates, color: color.withAlphaComponent(0.24), lineWidth: 12, to: map, coordinator: coordinator)
-                addPolyline(segment.coordinates, color: color.withAlphaComponent(0.82), lineWidth: 3, to: map, coordinator: coordinator)
+            if colorMode == .speed {
+                map.addOverlay(TrackGlowOverlay(segments: segments), level: .aboveRoads)
+                map.addOverlay(TrackGradientOverlay(segments: gradientSegments(from: segments), lineWidth: 4.5), level: .aboveRoads)
+            } else {
+                for segment in segments where segment.coordinates.count > 1 {
+                    let color = UIColor(segment.activityType.trackColor)
+                    addPolyline(segment.coordinates, color: color.withAlphaComponent(0.24), lineWidth: 12, to: map, coordinator: coordinator)
+                    addPolyline(segment.coordinates, color: color.withAlphaComponent(0.82), lineWidth: 3, to: map, coordinator: coordinator)
+                }
+                map.addOverlay(TrackGlowOverlay(segments: segments), level: .aboveRoads)
             }
-            map.addOverlay(TrackGlowOverlay(segments: segments), level: .aboveRoads)
         case .photoDots:
             let reliablePoints = points.filter(\.isReliable)
             let photoCoordinates = reliablePoints.map(\.coordinate)
             guard !photoCoordinates.isEmpty else { return }
             map.addOverlay(TrackDarkOverlay(coordinates: photoCoordinates, opacity: 0.22), level: .aboveRoads)
             map.addOverlay(TrackGlowOverlay(points: reliablePoints, presentation: .photoDots), level: .aboveRoads)
+        }
+    }
+
+    /// 将各段速度归一化到 [0, 1]（按本段轨迹的全局最值），生成渐变着色所需的坐标+速度序列。
+    private func gradientSegments(from segments: [TrackDisplaySegment]) -> [(coordinates: [CLLocationCoordinate2D], speeds: [Double])] {
+        let all = segments.flatMap(\.speeds)
+        let minS = all.min() ?? 0
+        let maxS = all.max() ?? 0
+        return segments.compactMap { segment in
+            guard segment.coordinates.count > 1 else { return nil }
+            let speeds: [Double]
+            if maxS > minS {
+                speeds = segment.speeds.map { ($0 - minS) / (maxS - minS) }
+            } else {
+                speeds = Array(repeating: 0.5, count: segment.speeds.count)
+            }
+            return (segment.coordinates, speeds)
         }
     }
 
@@ -141,7 +188,7 @@ struct TrackMapView: UIViewRepresentable {
     }
 
     private func addEndpointAnnotations(to map: MKMapView, coordinates: [CLLocationCoordinate2D]) {
-        guard style == .vivid, let first = coordinates.first, let last = coordinates.last else { return }
+        guard (style == .vivid || style == .standard), let first = coordinates.first, let last = coordinates.last else { return }
         let start = TrackEndpointAnnotation(kind: .start, coordinate: first)
         let finish = TrackEndpointAnnotation(kind: .finish, coordinate: last)
         map.addAnnotations([start, finish])
@@ -184,7 +231,7 @@ struct TrackMapView: UIViewRepresentable {
         fileprivate var overlayStyles: [ObjectIdentifier: TrackOverlayStyle] = [:]
         fileprivate var roadMatchedCoordinates: [String: [CLLocationCoordinate2D]] = [:]
         private var pendingRoadRequests: Set<String> = []
-        private let maximumRoadMatchedSegments = 24
+        private let maximumRoadMatchedSegments = 48
         private let maximumConcurrentRoadRequests = 4
 
         init(_ parent: TrackMapView) { self.parent = parent }
@@ -211,7 +258,7 @@ struct TrackMapView: UIViewRepresentable {
                     guard let coordinates, coordinates.count > 1 else { return }
                     self.roadMatchedCoordinates[segment.routeKey] = coordinates
                     if let map {
-                        map.removeOverlays(map.overlays.filter { $0 is MKPolyline || $0 is TrackGlowOverlay || $0 is TrackDarkOverlay })
+                        map.removeOverlays(map.overlays.filter { $0 is MKPolyline || $0 is TrackGlowOverlay || $0 is TrackDarkOverlay || $0 is TrackGradientOverlay })
                         self.overlayStyles.removeAll()
                         self.parent.updateTrackOnly(on: map, coordinator: self)
                     }
@@ -231,6 +278,9 @@ struct TrackMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            if let gradient = overlay as? TrackGradientOverlay {
+                return TrackGradientRenderer(overlay: gradient)
+            }
             if let glow = overlay as? TrackGlowOverlay {
                 return TrackGlowRenderer(overlay: glow)
             }
@@ -352,6 +402,12 @@ enum TrackMapStyle {
     case photoDots
 }
 
+/// 轨迹着色方式：`.speed` 按速度渐变（Nike/Strava 风格），`.activity` 按运动类型单色。
+enum TrackColorMode {
+    case speed
+    case activity
+}
+
 private struct TrackOverlayStyle {
     let color: UIColor
     let lineWidth: CGFloat
@@ -366,12 +422,14 @@ private struct TrackDisplaySegment: Identifiable {
     let endTimestamp: Date
     let distance: CLLocationDistance
     let averageSpeed: Double
+    /// 每个顶点的速度（米/秒），长度与 `coordinates` 一致，用于按速度着色。
+    let speeds: [Double]
 
     var shouldSnapToRoad: Bool {
         source == .recorded
             && coordinates.count == 2
             && distance >= 80
-            && distance <= 1_600
+            && distance <= 2_000
             && endTimestamp.timeIntervalSince(startTimestamp) >= 6
     }
 
@@ -424,7 +482,8 @@ private struct TrackDisplaySegment: Identifiable {
                                                     startTimestamp: previous.timestamp,
                                                     endTimestamp: current.timestamp,
                                                     distance: distance,
-                                                    averageSpeed: averageSpeed))
+                                                    averageSpeed: averageSpeed,
+                                                    speeds: [previous.speed ?? averageSpeed, current.speed ?? averageSpeed]))
                 nextID += 1
                 previousPoint = current
                 continue
@@ -443,7 +502,8 @@ private struct TrackDisplaySegment: Identifiable {
                                                 startTimestamp: previous.timestamp,
                                                 endTimestamp: current.timestamp,
                                                 distance: distance,
-                                                averageSpeed: averageSpeed))
+                                                averageSpeed: averageSpeed,
+                                                speeds: [previous.speed ?? averageSpeed, current.speed ?? averageSpeed]))
             nextID += 1
             previousPoint = current
         }
@@ -683,6 +743,111 @@ private final class TrackGlowRenderer: MKOverlayRenderer {
 
 }
 
+private final class TrackGradientOverlay: NSObject, MKOverlay {
+    let polylines: [MKPolyline]
+    let speeds: [[Double]]
+    let lineWidth: CGFloat
+    let boundingMapRect: MKMapRect
+    let coordinate: CLLocationCoordinate2D
+
+    init(segments: [(coordinates: [CLLocationCoordinate2D], speeds: [Double])], lineWidth: CGFloat) {
+        var polys: [MKPolyline] = []
+        var spds: [[Double]] = []
+        var rect = MKMapRect.null
+        for segment in segments where segment.coordinates.count > 1 {
+            let poly = MKPolyline(coordinates: segment.coordinates, count: segment.coordinates.count)
+            polys.append(poly)
+            spds.append(segment.speeds)
+            rect = rect.union(poly.boundingMapRect)
+        }
+        self.polylines = polys
+        self.speeds = spds
+        self.lineWidth = lineWidth
+        self.boundingMapRect = rect
+        self.coordinate = MKMapPoint(x: rect.midX, y: rect.midY).coordinate
+    }
+}
+
+/// 按速度逐段着色的渲染器（Nike+/Strava 风格速度热力）。
+private final class TrackGradientRenderer: MKOverlayRenderer {
+    override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in context: CGContext) {
+        guard let overlay = overlay as? TrackGradientOverlay else { return }
+        let lineWidth = overlay.lineWidth * CGFloat(zoomScale)
+        context.setLineWidth(lineWidth)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        context.setBlendMode(.normal)
+        context.setShouldAntialias(true)
+
+        // 先画一层半透明白色底衬，增强对比度
+        context.setStrokeColor(UIColor.white.withAlphaComponent(0.15).cgColor)
+        context.setLineWidth(lineWidth + 3 * CGFloat(zoomScale))
+        for index in 0..<overlay.polylines.count {
+            let poly = overlay.polylines[index]
+            let count = poly.pointCount
+            guard count > 1 else { continue }
+            var coords = Array(repeating: CLLocationCoordinate2D(), count: count)
+            poly.getCoordinates(&coords, range: NSRange(location: 0, length: count))
+            var path = CGMutablePath()
+            path.move(to: point(for: MKMapPoint(coords[0])))
+            for i in 1..<count {
+                path.addLine(to: point(for: MKMapPoint(coords[i])))
+            }
+            context.addPath(path)
+        }
+        context.strokePath()
+
+        // 再画速度渐变主线
+        context.setLineWidth(lineWidth)
+        for index in 0..<overlay.polylines.count {
+            let poly = overlay.polylines[index]
+            let speeds = overlay.speeds[index]
+            let count = poly.pointCount
+            guard count > 1 else { continue }
+            var coordinates = Array(repeating: CLLocationCoordinate2D(), count: count)
+            poly.getCoordinates(&coordinates, range: NSRange(location: 0, length: count))
+            for i in 0..<count - 1 {
+                let a = speeds[min(i, speeds.count - 1)]
+                let b = speeds[min(i + 1, speeds.count - 1)]
+                context.setStrokeColor(speedRampColor((a + b) / 2).cgColor)
+                let p0 = self.point(for: MKMapPoint(coordinates[i]))
+                let p1 = self.point(for: MKMapPoint(coordinates[i + 1]))
+                context.move(to: p0)
+                context.addLine(to: p1)
+                context.strokePath()
+            }
+        }
+    }
+}
+
+/// 速度→颜色色标：慢（蓝）→中（绿/黄）→快（橙红）。
+private func speedRampColor(_ t: Double) -> UIColor {
+    let t = min(max(CGFloat(t), 0), 1)
+    let stops: [(CGFloat, UIColor)] = [
+        (0.0, UIColor(red: 0.20, green: 0.55, blue: 1.00, alpha: 1)),
+        (0.40, UIColor(red: 0.24, green: 0.83, blue: 0.66, alpha: 1)),
+        (0.70, UIColor(red: 0.98, green: 0.80, blue: 0.30, alpha: 1)),
+        (1.0, UIColor(red: 1.00, green: 0.36, blue: 0.28, alpha: 1))
+    ]
+    for i in 0..<stops.count - 1 {
+        let (p0, c0) = stops[i]
+        let (p1, c1) = stops[i + 1]
+        if t <= p1 {
+            let f = p1 > p0 ? (t - p0) / (p1 - p0) : 0
+            return interpolateColor(c0, c1, f)
+        }
+    }
+    return stops.last!.1
+}
+
+private func interpolateColor(_ a: UIColor, _ b: UIColor, _ f: CGFloat) -> UIColor {
+    var ar: CGFloat = 0, ag: CGFloat = 0, ab: CGFloat = 0, aa: CGFloat = 0
+    var br: CGFloat = 0, bg: CGFloat = 0, bb: CGFloat = 0, ba: CGFloat = 0
+    a.getRed(&ar, green: &ag, blue: &ab, alpha: &aa)
+    b.getRed(&br, green: &bg, blue: &bb, alpha: &ba)
+    return UIColor(red: ar + (br - ar) * f, green: ag + (bg - ag) * f, blue: ab + (bb - ab) * f, alpha: aa + (ba - aa) * f)
+}
+
 private struct PhotoDotBucket: Hashable {
     let x: Int
     let y: Int
@@ -798,5 +963,27 @@ extension Array where Element == TrackMapPoint {
             result.append(self[sourceIndex])
         }
         return result
+    }
+}
+
+/// 速度图例：渐变条 + 慢/快标签，叠加在轨迹地图左下角，说明按速度着色含义。
+struct TrackSpeedLegend: View {
+    private let stops: [Color] = [
+        Color(red: 0.20, green: 0.55, blue: 1.00),
+        Color(red: 0.24, green: 0.83, blue: 0.66),
+        Color(red: 0.98, green: 0.80, blue: 0.30),
+        Color(red: 1.00, green: 0.36, blue: 0.28)
+    ]
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("慢").font(.caption2).foregroundStyle(.secondary)
+            LinearGradient(colors: stops, startPoint: .leading, endPoint: .trailing)
+                .frame(width: 72, height: 8)
+                .clipShape(Capsule())
+            Text("快").font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
     }
 }
