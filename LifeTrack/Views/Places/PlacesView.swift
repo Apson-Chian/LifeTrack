@@ -10,6 +10,7 @@ struct PlacesView: View {
     @State private var searchText = ""
     @State private var draft: PlaceDraft?
     @State private var editingPlace: CustomPlace?
+    @State private var persistenceError: String?
 
     private var filteredPlaces: [CustomPlace] {
         searchText.isEmpty ? places : places.filter { $0.shortName.localizedCaseInsensitiveContains(searchText) || ($0.officialName?.localizedCaseInsensitiveContains(searchText) ?? false) }
@@ -36,6 +37,30 @@ struct PlacesView: View {
                             CampusDashboardView()
                         } label: {
                             campusEntryRow
+                        }
+
+                        NavigationLink {
+                            TimetableView()
+                        } label: {
+                            campusFeatureRow(symbol: "calendar", tint: .blue,
+                                             title: "课表",
+                                             subtitle: "管理每周课程安排")
+                        }
+
+                        NavigationLink {
+                            StudyStatsView()
+                        } label: {
+                            campusFeatureRow(symbol: "book.closed.fill", tint: .teal,
+                                             title: "学习统计",
+                                             subtitle: "汇总图书馆、自习室等学习停留时长")
+                        }
+
+                        NavigationLink {
+                            CampusHeatmapView()
+                        } label: {
+                            campusFeatureRow(symbol: "flame.fill", tint: .orange,
+                                             title: "校园热力图",
+                                             subtitle: "查看校园活动热点分布")
                         }
                     }
                 }
@@ -82,6 +107,11 @@ struct PlacesView: View {
                 PlaceEditorView(coordinate: draft.coordinate, defaultIsCampusPlace: draft.isCampusPlace)
             }
             .sheet(item: $editingPlace) { place in PlaceEditorView(coordinate: CLLocationCoordinate2D(latitude: place.latitude, longitude: place.longitude), existingPlace: place) }
+            .alert("地点操作失败", isPresented: persistenceErrorPresented) {
+                Button("好", role: .cancel) { persistenceError = nil }
+            } message: {
+                Text(persistenceError ?? "请稍后重试。")
+            }
         }
     }
 
@@ -105,6 +135,28 @@ struct PlacesView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            }
+        }
+        .padding(.vertical, 3)
+    }
+
+    private func campusFeatureRow(symbol: String,
+                                  tint: Color,
+                                  title: String,
+                                  subtitle: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(width: 46, height: 46)
+                .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, 3)
@@ -152,12 +204,26 @@ struct PlacesView: View {
     private func delete(at offsets: IndexSet) {
         let values = filteredPlaces
         for index in offsets { modelContext.delete(values[index]) }
-        try? modelContext.save()
+        savePlaceDeletion(operation: "删除地点")
     }
 
     private func deleteFavorites(at offsets: IndexSet) {
         let values = places.filter(\.isFavorite)
         for index in offsets { modelContext.delete(values[index]) }
-        try? modelContext.save()
+        savePlaceDeletion(operation: "删除收藏地点")
+    }
+
+    private func savePlaceDeletion(operation: String) {
+        let saved = PersistenceService.save(modelContext,
+                                            operation: operation,
+                                            failureRecovery: .rollback) {
+            persistenceError = $0
+        }
+        if saved { locationService.refreshPlaceCache() }
+    }
+
+    private var persistenceErrorPresented: Binding<Bool> {
+        Binding(get: { persistenceError != nil },
+                set: { if !$0 { persistenceError = nil } })
     }
 }

@@ -7,6 +7,7 @@ enum ActivityType: String, CaseIterable, Codable, Identifiable {
     case running
     case cycling
     case automotive
+    case transit
     case unknown
 
     var id: String { rawValue }
@@ -18,6 +19,7 @@ enum ActivityType: String, CaseIterable, Codable, Identifiable {
         case .running: "跑步"
         case .cycling: "骑行"
         case .automotive: "驾车"
+        case .transit: "公交地铁"
         case .unknown: "未知"
         }
     }
@@ -29,6 +31,7 @@ enum ActivityType: String, CaseIterable, Codable, Identifiable {
         case .running: "figure.run"
         case .cycling: "bicycle"
         case .automotive: "car"
+        case .transit: "tram.fill"
         case .unknown: "questionmark.circle"
         }
     }
@@ -81,6 +84,8 @@ struct SamplingPolicy {
         case .cycling:
             return SamplingPolicy(desiredAccuracy: kCLLocationAccuracyNearestTenMeters, distanceFilter: 25, minimumInterval: 7, minimumAccuracy: 70)
         case .automotive:
+            return SamplingPolicy(desiredAccuracy: kCLLocationAccuracyNearestTenMeters, distanceFilter: 75, minimumInterval: 15, minimumAccuracy: 100)
+        case .transit:
             return SamplingPolicy(desiredAccuracy: kCLLocationAccuracyNearestTenMeters, distanceFilter: 75, minimumInterval: 15, minimumAccuracy: 100)
         case .unknown:
             return SamplingPolicy(desiredAccuracy: kCLLocationAccuracyNearestTenMeters, distanceFilter: 25, minimumInterval: 10, minimumAccuracy: 100)

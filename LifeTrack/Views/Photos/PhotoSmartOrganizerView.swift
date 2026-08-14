@@ -41,6 +41,7 @@ struct PhotoSmartOrganizerView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
+                    PhotoLibraryScanCache.invalidate()
                     Task { await refreshLibrary() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
@@ -57,6 +58,9 @@ struct PhotoSmartOrganizerView: View {
         .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
             isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
             if isLowPowerModeEnabled { analysisTask?.cancel() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .lifeTrackPhotoLibraryDidChange)) { _ in
+            Task { await refreshLibrary() }
         }
     }
 
@@ -210,6 +214,16 @@ struct PhotoSmartOrganizerView: View {
                                 value: snapshot.displayedRecords.isEmpty ? nil : "\(snapshot.displayedRecords.count) 张")
             }
             .disabled(snapshot.displayedRecords.isEmpty)
+
+            NavigationLink {
+                TravelArchiveView()
+            } label: {
+                PhotoFeatureRow(title: "旅行归档建议",
+                                subtitle: "结合照片、轨迹与停留地点识别明显旅行",
+                                symbol: "suitcase.fill",
+                                tint: .teal,
+                                value: "本地识别")
+            }
         }
     }
 
@@ -300,8 +314,10 @@ struct PhotoSmartOrganizerView: View {
             return
         }
 
+        PhotoLibraryChangeMonitor.shared.ensureRegistered()
+        let generation = PhotoLibraryChangeMonitor.shared.generation
         let descriptors = await Task.detached(priority: .utility) {
-            PhotoLibraryScanner.descriptors()
+            PhotoLibraryScanCache.descriptors(currentGeneration: generation)
         }.value
         libraryDescriptors = descriptors
         synchronizeCache(with: descriptors, removeMissing: status == .authorized)
@@ -310,7 +326,7 @@ struct PhotoSmartOrganizerView: View {
         let hasPendingDescriptors = descriptors.contains { !cachedIdentifiers.contains($0.id) }
         statusMessage = !hasPendingDescriptors
             ? "已直接读取本地缓存，没有重复分析。"
-            : "PhotoKit 只会向分析器交付小尺寸图像，Vision 推理全程在本机完成。"
+            : "Vision 推理全程在本机完成；如果照片仅存储在 iCloud，系统可能下载小尺寸缩略图用于本地分析。"
         isRefreshing = false
     }
 
@@ -330,7 +346,7 @@ struct PhotoSmartOrganizerView: View {
         for record in records where !identifiers.contains(record.assetIdentifier) {
             modelContext.delete(record)
         }
-        try? modelContext.save()
+        PersistenceService.save(modelContext, operation: "同步照片缓存")
     }
 
     private func relinkCachedRecords(using descriptors: [PhotoLibraryAssetDescriptor]) async {
@@ -363,7 +379,7 @@ struct PhotoSmartOrganizerView: View {
             record.linkedSessionID = update.linkedSessionID
             didChange = true
         }
-        if didChange { try? modelContext.save() }
+        if didChange { PersistenceService.save(modelContext, operation: "关联照片轨迹") }
     }
 
     private func startAnalysis(_ descriptors: [PhotoLibraryAssetDescriptor]) {
@@ -413,12 +429,12 @@ struct PhotoSmartOrganizerView: View {
                 completedInCurrentRun += 1
 
                 if completedInCurrentRun % 10 == 0 {
-                    try? modelContext.save()
+                    PersistenceService.save(modelContext, operation: "保存照片分析缓存")
                     await yieldForEnergyAndThermals()
                 }
             }
 
-            try? modelContext.save()
+            PersistenceService.save(modelContext, operation: "完成照片分析缓存")
             let wasCancelled = Task.isCancelled
             isAnalyzing = false
             analysisTask = nil
@@ -506,29 +522,27 @@ struct SmartCategoryPhotosView: View {
     let category: PhotoSmartCategory
     let records: [PhotoAnalysisRecord]
 
-    private let columns = [GridItem(.flexible(), spacing: 3),
-                           GridItem(.flexible(), spacing: 3),
-                           GridItem(.flexible())]
+    @Environment(\.modelContext) private var modelContext
+
+    private var sortedItems: [PhotoDetailItem] {
+        records
+            .sorted { $0.creationDate > $1.creationDate }
+            .map { PhotoDetailItem(record: $0) }
+    }
 
     var body: some View {
         ScrollView {
-            LazyVGrid(columns: columns, spacing: 3) {
-                ForEach(records.sorted { $0.creationDate > $1.creationDate }) { record in
-                    ZStack(alignment: .bottomLeading) {
-                        PhotoThumbnailView(assetIdentifier: record.assetIdentifier, cornerRadius: 4)
-                            .aspectRatio(1, contentMode: .fit)
-                        if record.linkedSessionID != nil {
-                            Image(systemName: "point.3.connected.trianglepath.dotted")
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(.white)
-                                .padding(5)
-                                .background(.black.opacity(0.48), in: Circle())
-                                .padding(5)
-                        }
-                    }
+            PhotoGalleryContentView(
+                items: sortedItems,
+                featuredCount: 5,
+                spacing: 3,
+                linkedBadge: true,
+                onDelete: { item in
+                    try? await PhotoLibraryMutationService.deletePhoto(
+                        assetIdentifier: item.assetIdentifier,
+                        container: modelContext.container)
                 }
-            }
-            .padding(3)
+            )
         }
         .navigationTitle("\(category.title) · \(records.count)")
         .navigationBarTitleDisplayMode(.inline)
@@ -589,12 +603,13 @@ private struct SmartTravelAlbumCard: View {
     let placeName: String?
 
     var body: some View {
-        HStack(spacing: 13) {
-            PhotoThumbnailView(assetIdentifier: album.records.first?.assetIdentifier ?? "",
-                               cornerRadius: 12)
-                .frame(width: 92, height: 92)
+        HStack(spacing: 14) {
+            // 封面先锁定正方形，再让图片填充，避免长图撑坏相册卡片。
+            PhotoSquareThumbnail(assetIdentifier: album.records.first?.assetIdentifier ?? "",
+                                 cornerRadius: 14)
+                .frame(width: 92)
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 5) {
                 Text(placeName ?? album.title)
                     .font(.headline)
                     .foregroundStyle(.primary)
@@ -604,19 +619,20 @@ private struct SmartTravelAlbumCard: View {
                     .foregroundStyle(.secondary)
                 HStack(spacing: 10) {
                     Label("\(album.records.count) 张", systemImage: "photo.stack")
+                        .foregroundStyle(.secondary)
                     if album.linkedSessionCount > 0 {
                         Label("\(album.linkedSessionCount) 段轨迹", systemImage: "point.3.connected.trianglepath.dotted")
+                            .foregroundStyle(.indigo)
                     }
                 }
                 .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
             }
-            Spacer(minLength: 4)
+            Spacer(minLength: 0)
             Image(systemName: "chevron.right")
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.quaternary)
         }
-        .padding(12)
+        .padding(14)
         .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
     }
 }
@@ -624,9 +640,13 @@ private struct SmartTravelAlbumCard: View {
 struct SmartTravelAlbumDetailView: View {
     let album: SmartTravelAlbum
 
-    private let columns = [GridItem(.flexible(), spacing: 3),
-                           GridItem(.flexible(), spacing: 3),
-                           GridItem(.flexible())]
+    @Environment(\.modelContext) private var modelContext
+
+    private var sortedItems: [PhotoDetailItem] {
+        album.records
+            .sorted { $0.creationDate > $1.creationDate }
+            .map { PhotoDetailItem(record: $0) }
+    }
 
     private var photoMapPoints: [TrackMapPoint] {
         album.records.compactMap { record in
@@ -668,12 +688,17 @@ struct SmartTravelAlbumDetailView: View {
                     }
                 }
 
-                LazyVGrid(columns: columns, spacing: 3) {
-                    ForEach(album.records.sorted { $0.creationDate > $1.creationDate }) { record in
-                        PhotoThumbnailView(assetIdentifier: record.assetIdentifier, cornerRadius: 4)
-                            .aspectRatio(1, contentMode: .fit)
+                PhotoGalleryContentView(
+                    items: sortedItems,
+                    featuredCount: 5,
+                    spacing: 3,
+                    linkedBadge: true,
+                    onDelete: { item in
+                        try? await PhotoLibraryMutationService.deletePhoto(
+                            assetIdentifier: item.assetIdentifier,
+                            container: modelContext.container)
                     }
-                }
+                )
             }
             .padding()
         }

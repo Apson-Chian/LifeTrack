@@ -3,30 +3,42 @@ import SwiftData
 
 @main
 struct LifeTrackApp: App {
-    private let sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            ActivitySession.self,
-            TrackPoint.self,
-            CustomPlace.self,
-            StayRecord.self,
-            DailySummary.self,
-            PhotoAnalysisRecord.self,
-            TravelTimelineTrip.self,
-            TravelTimelineNode.self
-        ])
-        let configuration = ModelConfiguration("LifeTrack", schema: schema)
+    @State private var storeState = DataStoreManager.openActiveStore()
 
-        do {
-            return try ModelContainer(for: schema, configurations: configuration)
-        } catch {
-            fatalError("Unable to create LifeTrack data store: \(error)")
-        }
-    }()
+    init() {
+        DiagnosticsService.installCrashHandlers()
+    }
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            storeContent
         }
-        .modelContainer(sharedModelContainer)
+    }
+
+    @ViewBuilder
+    private var storeContent: some View {
+        switch storeState {
+        case .ready(let container):
+            RootView()
+                .modelContainer(container)
+        case .failed(let message, let storeName):
+            DataStoreRecoveryView(errorMessage: message,
+                                  storeName: storeName,
+                                  retry: retryOpeningStore,
+                                  createEmptyStore: createEmptyStore)
+        }
+    }
+
+    private func retryOpeningStore() {
+        storeState = DataStoreManager.openActiveStore()
+    }
+
+    private func createEmptyStore() {
+        do {
+            storeState = .ready(try DataStoreManager.createRecoveryStore())
+        } catch {
+            storeState = .failed(message: String(reflecting: error),
+                                 storeName: DataStoreManager.activeStoreName)
+        }
     }
 }

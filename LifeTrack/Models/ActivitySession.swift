@@ -15,6 +15,7 @@ final class ActivitySession {
     var destinationLatitude: Double?
     var destinationLongitude: Double?
     var manualActivityTypeRawValue: String?
+    var importFingerprint: String?
 
     @Relationship(deleteRule: .cascade, inverse: \TrackPoint.session)
     var trackPoints: [TrackPoint] = []

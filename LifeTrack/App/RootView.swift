@@ -3,9 +3,10 @@ import SwiftData
 
 struct RootView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(filter: #Predicate<ActivitySession> { $0.isActive }) private var activeSessions: [ActivitySession]
+    @Environment(\.scenePhase) private var scenePhase
     @State private var locationService = LocationService.shared
-    @State private var didRestoreSession = false
+    @State private var didConfigureServices = false
+    @State private var showOnboarding = !OnboardingState.hasSeenOnboarding
 
     var body: some View {
         TabView {
@@ -18,16 +19,24 @@ struct RootView: View {
             PlacesView(locationService: locationService)
                 .tabItem { Label("地点", systemImage: "mappin.and.ellipse") }
 
+            InsightAssistantView()
+                .tabItem { Label("助手", systemImage: "sparkles") }
+
             SettingsView(locationService: locationService)
                 .tabItem { Label("设置", systemImage: "gearshape") }
         }
         .task {
-            guard !didRestoreSession else { return }
-            didRestoreSession = true
+            guard !didConfigureServices else { return }
+            didConfigureServices = true
             locationService.configure(with: modelContext)
-            if let session = activeSessions.first {
-                locationService.restore(session: session)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .inactive || phase == .background {
+                locationService.flushPendingTrackDataIfNeeded(force: true)
             }
+        }
+        .fullScreenCover(isPresented: $showOnboarding) {
+            OnboardingView()
         }
     }
 }

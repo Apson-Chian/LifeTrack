@@ -81,6 +81,11 @@ enum PhotoVisionAnalysisService {
     // Vision sees only this small PhotoKit rendition. Originals never leave Photos or enter the analyzer.
     private static let thumbnailSize = CGSize(width: 384, height: 384)
 
+    /// 蜂窝网络下默认不联网下载，避免消耗流量；用户在设置中开启后才允许。
+    private static var isNetworkDownloadAllowed: Bool {
+        !NetworkStatusService.shared.isCellular || NetworkStatusService.allowsCellularPhotoDownload
+    }
+
     static func analyze(_ descriptor: PhotoLibraryAssetDescriptor) async -> PhotoVisionAnalysisResult {
         guard let thumbnail = await requestThumbnail(for: descriptor.id) else {
             return PhotoVisionAnalysisResult(categories: [.other],
@@ -110,8 +115,8 @@ enum PhotoVisionAnalysisService {
             options.deliveryMode = .opportunistic
             options.resizeMode = .fast
             options.isSynchronous = false
-            // PhotoKit may resolve an iCloud-backed asset, but Vision still receives only this small rendition.
-            options.isNetworkAccessAllowed = true
+            // 蜂窝网络下默认不从 iCloud 下载缩略图，避免消耗流量（用户可在设置中开启）。
+            options.isNetworkAccessAllowed = Self.isNetworkDownloadAllowed
 
             PHImageManager.default().requestImage(for: asset,
                                                   targetSize: thumbnailSize,

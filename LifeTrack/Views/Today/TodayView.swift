@@ -1,8 +1,10 @@
 import SwiftUI
 import SwiftData
 import CoreLocation
+import UIKit
 
 struct TodayView: View {
+    @Environment(\.openURL) private var openURL
     @ObservedObject var locationService: LocationService
     @Query(sort: \ActivitySession.startTime, order: .reverse) private var sessions: [ActivitySession]
     @Query(sort: \CustomPlace.shortName) private var places: [CustomPlace]
@@ -73,6 +75,18 @@ struct TodayView: View {
                 Button("好", role: .cancel) { }
             } message: {
                 Text("安装高德地图后可开始导航。LifeTrack 会独立保存本地轨迹。")
+            }
+            .alert("操作未完成", isPresented: criticalErrorPresented) {
+                if locationService.recordingState == .stopFailed {
+                    Button("重试保存") { locationService.retryStopRecording() }
+                }
+                if locationService.authorizationStatus == .denied ||
+                    locationService.authorizationStatus == .restricted {
+                    Button("打开系统设置") { openSystemSettings() }
+                }
+                Button("好", role: .cancel) { locationService.clearCriticalError() }
+            } message: {
+                Text(locationService.lastCriticalError ?? "请稍后重试。")
             }
             .navigationDestination(isPresented: $showTodayTrackDetail) {
                 TodayTrackDetailView(sessions: todaySessions,
@@ -155,7 +169,16 @@ struct TodayView: View {
                 Button(manualActivity?.displayName ?? "活动") { showActivityPicker = true }
                     .buttonStyle(.bordered)
             }
-            if locationService.activeSession == nil {
+            if locationService.recordingState == .stopping {
+                ProgressView("正在安全结束记录…")
+                    .frame(maxWidth: .infinity)
+            } else if locationService.recordingState == .stopFailed {
+                Button { locationService.retryStopRecording() } label: {
+                    Label("重试结束保存", systemImage: "arrow.clockwise.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+            } else if locationService.activeSession == nil {
                 Button { locationService.startRecording(manualActivity: manualActivity) } label: {
                     Label("开始记录", systemImage: "record.circle")
                         .frame(maxWidth: .infinity)
@@ -168,8 +191,40 @@ struct TodayView: View {
                 }
                 .buttonStyle(.bordered)
             }
+
+            if locationService.needsBackgroundWarning {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("进入后台或锁屏后轨迹可能中断", systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.orange)
+                    Text("当前只有“使用 App 时”定位权限。前台记录可继续；若需要锁屏后持续记录，请升级为“始终允许”。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("允许后台持续记录") {
+                        locationService.requestBackgroundAuthorization()
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+            }
         }
         .padding(.horizontal)
+    }
+
+    private var criticalErrorPresented: Binding<Bool> {
+        Binding(
+            get: { locationService.lastCriticalError != nil },
+            set: { isPresented in
+                if !isPresented { locationService.clearCriticalError() }
+            }
+        )
+    }
+
+    private func openSystemSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        openURL(url)
     }
 
     private var summary: some View {
@@ -185,7 +240,7 @@ struct TodayView: View {
     private var activityBreakdown: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("活动分布").font(.headline)
-            ForEach([ActivityType.walking, .running, .cycling, .automotive]) { type in
+            ForEach([ActivityType.walking, .running, .cycling, .automotive, .transit]) { type in
                 let value = distance(for: type)
                 HStack {
                     Image(systemName: type.symbolName).frame(width: 24)
@@ -531,7 +586,7 @@ private struct MapControlsPanel<Content: View>: View {
 }
 
 private struct TrackTypeLegend: View {
-    private let types: [ActivityType] = [.walking, .running, .cycling, .automotive]
+    private let types: [ActivityType] = [.walking, .running, .cycling, .automotive, .transit]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {

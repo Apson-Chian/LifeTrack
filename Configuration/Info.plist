@@ -27,7 +27,7 @@
     <key>NSMotionUsageDescription</key>
     <string>LifeTrack uses motion activity to adapt trip recording accuracy and save battery.</string>
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>LifeTrack locally analyzes small photo thumbnails and reads time and location metadata to organize categories, travel albums, footprints, and timelines.</string>
+    <string>LifeTrack analyzes small photo thumbnails on this device, reads time and location metadata, and only deletes a photo from your library after you explicitly confirm. iCloud may download a thumbnail when an original is not stored locally.</string>
     <key>UIBackgroundModes</key>
     <array>
         <string>location</string>
