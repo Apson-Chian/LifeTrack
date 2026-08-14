@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import CoreLocation
+import Photos
 
 struct PhotoTravelTimelineView: View {
     @Environment(\.modelContext) private var modelContext
@@ -13,9 +14,10 @@ struct PhotoTravelTimelineView: View {
     @State private var selectedNodeID: UUID?
     @State private var cameraRequest: MapCameraRequest?
     @State private var isRefreshing = false
-    @State private var isRestoringHistory = false
     @State private var statusMessage: String?
     @State private var selectedPhoto: PhotoDetailItem?
+    @State private var photoAuthorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+    @State private var lastScanSummary: TravelTimelineRefreshSummary?
 
     private var selectedTrip: TravelTimelineTrip? {
         if let selectedTripID, let selected = trips.first(where: { $0.id == selectedTripID }) {
@@ -72,26 +74,24 @@ struct PhotoTravelTimelineView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    Task {
-                        await refreshTimeline()
-                        await restoreHistoricalTrips()
-                    }
+                    Task { await refreshAll() }
                 } label: {
-                    if isRefreshing || isRestoringHistory {
+                    if isRefreshing {
                         ProgressView()
                     } else {
                         Image(systemName: "arrow.clockwise")
                     }
                 }
-                .disabled(isRefreshing || isRestoringHistory)
-                .accessibilityLabel("增量更新旅行时间轴")
+                .disabled(isRefreshing)
+                .accessibilityLabel("完整重建旅行时间轴")
             }
         }
         .task {
             if selectedTripID == nil { selectedTripID = trips.first?.id }
-            // 先即时读取缓存，再在后台枚举照片时间/GPS 元数据恢复旧行程；不加载图片或运行 Vision。
+            // 先即时读取缓存保证页面不空白；再从全部照片元数据重建历史照片行程，
+            // 并限额分析新增照片补齐分类，二者都不整库跑 Vision。
             await rebuildFromCache()
-            await restoreHistoricalTrips()
+            await refreshIncrementally()
         }
         .onChange(of: selectedTripID) { _, _ in
             selectedNodeID = nil
@@ -165,7 +165,7 @@ struct PhotoTravelTimelineView: View {
                 Text("旅行概览")
                     .font(.headline)
                 Spacer()
-                Text("本地缓存")
+                Text("共 \(trips.count) 次")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.indigo)
                     .padding(.horizontal, 8)
@@ -186,6 +186,23 @@ struct PhotoTravelTimelineView: View {
 
             if let statusMessage {
                 Text(statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if photoAuthorization == .limited {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("当前只能扫描你选中的部分照片，所以旧旅行一定不完整。App 仅在本机读取时间和 GPS，照片画面不会发送给 AI。",
+                          systemImage: "photo.badge.exclamationmark")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    Button("前往设置，允许访问所有照片") {
+                        openPhotoSettings()
+                    }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.bordered)
+                }
+            } else if let summary = lastScanSummary, summary.scannedPhotoCount > 0 {
+                Text("本机扫描 \(summary.scannedPhotoCount) 张照片，其中 \(summary.locatedPhotoCount) 张带 GPS；识别到 \(summary.routineAnchorCount) 个日常活动区域。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -219,12 +236,40 @@ struct PhotoTravelTimelineView: View {
         }
     }
 
-    private func refreshTimeline() async {
+    /// 手动刷新 / 首次完整构建：覆盖整库照片与历史行程，保证时间轴“全”。
+    private func refreshAll() async {
         guard !isRefreshing else { return }
         isRefreshing = true
-        statusMessage = "正在比较新增照片和轨迹…"
-        let summary = await TravelTimelineGenerationService.refresh(context: modelContext,
-                                                                     sessions: sessions)
+        statusMessage = "正在覆盖全部照片与轨迹生成旅行时间轴…"
+        PhotoLibraryScanCache.invalidate()
+        let summary = await TravelTimelineGenerationService.rebuildAll(context: modelContext,
+                                                                      sessions: sessions,
+                                                                      places: places,
+                                                                      stays: stays)
+        selectLatestTrip()
+        photoAuthorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        lastScanSummary = summary
+        statusMessage = statusText(for: summary)
+        isRefreshing = false
+    }
+
+    /// 自动进入页面时的增量更新：只纳入新增照片与最新行程，不重算已有历史。
+    private func refreshIncrementally() async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        statusMessage = "正在纳入新增照片与最新行程…"
+        let summary = await TravelTimelineGenerationService.refreshIncremental(context: modelContext,
+                                                                               sessions: sessions,
+                                                                               places: places,
+                                                                               stays: stays)
+        selectLatestTrip()
+        photoAuthorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        lastScanSummary = summary
+        statusMessage = statusText(for: summary)
+        isRefreshing = false
+    }
+
+    private func selectLatestTrip() {
         let descriptor = FetchDescriptor<TravelTimelineTrip>(sortBy: [SortDescriptor(\TravelTimelineTrip.startTime,
                                                                                      order: .reverse)])
         let refreshedTrips = (try? modelContext.fetch(descriptor)) ?? []
@@ -232,15 +277,30 @@ struct PhotoTravelTimelineView: View {
             selectedTripID = refreshedTrips.first?.id
         }
         cameraRequest = refreshedTrips.isEmpty ? nil : MapCameraRequest(target: .route)
-        if summary.updatedTripCount == 0 && summary.analyzedPhotoCount == 0 {
-            statusMessage = "未发现新增数据，已直接读取 SwiftData 缓存。"
-        } else {
-            var parts: [String] = []
-            if summary.updatedTripCount > 0 { parts.append("更新 \(summary.updatedTripCount) 次旅行") }
-            if summary.analyzedPhotoCount > 0 { parts.append("分析 \(summary.analyzedPhotoCount) 张新照片") }
-            statusMessage = parts.joined(separator: "，") + "。"
+    }
+
+    private func statusText(for summary: TravelTimelineRefreshSummary) -> String {
+        if summary.photoAccessLimited {
+            return "仅扫描到已授权的 \(summary.scannedPhotoCount) 张照片；允许访问所有照片后再点右上角刷新，才能恢复完整历史。"
         }
-        isRefreshing = false
+        if summary.scannedPhotoCount > 0 && summary.locatedPhotoCount == 0 {
+            return "扫描到 \(summary.scannedPhotoCount) 张照片，但都没有 GPS 信息，暂时无法区分旅行与日常。"
+        }
+        if summary.locatedPhotoCount > 0 && summary.routineAnchorCount == 0 {
+            return "找到 \(summary.locatedPhotoCount) 张定位照片，但跨日数据不足以推断家/学校；继续记录后会自动补齐。"
+        }
+        if summary.updatedTripCount == 0 && summary.analyzedPhotoCount == 0 {
+            return "未发现新增数据，已直接读取缓存。"
+        }
+        var parts: [String] = []
+        if summary.updatedTripCount > 0 { parts.append("更新 \(summary.updatedTripCount) 次旅行") }
+        if summary.analyzedPhotoCount > 0 { parts.append("分析 \(summary.analyzedPhotoCount) 张照片") }
+        return parts.joined(separator: "，") + "。"
+    }
+
+    private func openPhotoSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 
     private func rebuildFromCache() async {
@@ -256,20 +316,6 @@ struct PhotoTravelTimelineView: View {
         if summary.updatedTripCount > 0 {
             statusMessage = "已从现有 GPS 和照片缓存补回 \(summary.updatedTripCount) 次行程。"
         }
-    }
-
-    private func restoreHistoricalTrips() async {
-        guard !isRestoringHistory else { return }
-        isRestoringHistory = true
-        let summary = await TravelTimelineGenerationService.rebuildFromPhotoMetadata(context: modelContext,
-                                                                                      sessions: sessions,
-                                                                                      places: places,
-                                                                                      stays: stays)
-        if summary.updatedTripCount > 0 {
-            statusMessage = "已根据日常活动圈从历史照片元数据恢复 \(summary.updatedTripCount) 次异地行程。"
-        }
-        if selectedTripID == nil { selectedTripID = trips.first?.id }
-        isRestoringHistory = false
     }
 
     private func showPhoto(_ identifier: String, date: Date, coordinate: CLLocationCoordinate2D?) {

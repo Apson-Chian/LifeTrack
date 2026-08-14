@@ -543,6 +543,32 @@ final class ReliabilityTests: XCTestCase {
             coordinate: remote, routineAnchors: [home], groupPhotoCount: 1))
     }
 
+    func testRoutineAnchorsCanBeInferredFromRecurringHistoricalMetadata() {
+        let base = Date(timeIntervalSince1970: 1_650_000_000)
+        var samples: [HistoricalRoutineLocationSample] = []
+        for day in 0..<12 {
+            samples.append(HistoricalRoutineLocationSample(
+                coordinate: CLLocationCoordinate2D(latitude: 31.20 + Double(day % 2) * 0.001,
+                                                    longitude: 121.40),
+                date: base.addingTimeInterval(Double(day) * 86_400)
+            ))
+        }
+        for day in 0..<2 {
+            samples.append(HistoricalRoutineLocationSample(
+                coordinate: CLLocationCoordinate2D(latitude: 39.90, longitude: 116.40),
+                date: base.addingTimeInterval(Double(day) * 86_400)
+            ))
+        }
+
+        let anchors = TravelTimelineGenerationService.inferredRoutineAnchors(samples: samples)
+
+        XCTAssertEqual(anchors.count, 1)
+        let inferredLocation = CLLocation(latitude: anchors[0].latitude, longitude: anchors[0].longitude)
+        let expectedLocation = CLLocation(latitude: 31.20, longitude: 121.40)
+        XCTAssertLessThan(inferredLocation.distance(from: expectedLocation),
+                          2_000)
+    }
+
     func testTimelineCacheRebuildNeverDeletesHistoricalTripsMissingFromCurrentDrafts() async throws {
         let container = try makeContainer()
         let context = container.mainContext
