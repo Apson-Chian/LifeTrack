@@ -1,63 +1,100 @@
 import Foundation
 
 // MARK: - 隐私红线
-//
-// 本文件实现与 agnes-ai（OpenAI 兼容网关）的对话客户端。
-// 设计上 **只发送文字（String content）**，不存在图片内容分支。
-// Agent 工具层只允许照片解析结果经过 PhotoAIPrivacyFilter 后以聚合文本输出：
-// 原图、缩略图、路径、资产标识符、坐标、拍摄时间和人物信息不会交给 Agnes。
+// OpenAI Chat Completions 兼容的纯文本客户端。无论选择 Agnes 或 DeepSeek，
+// 请求结构都不存在图片分支；照片只能由 PhotoAIPrivacyFilter 在本机聚合、脱敏。
 
-enum AgnesSettings {
-    private static let enabledKey = "agnes.enabled"
-    private static let modelKey = "agnes.model"
-    private static let apiKeyKey = "agnes.apiKey"
+enum AIProvider: String, CaseIterable, Identifiable {
+    case agnes
+    case deepSeek = "deepseek"
+
+    var id: String { rawValue }
+    var displayName: String { self == .agnes ? "Agnes" : "DeepSeek" }
+    var baseURL: String { self == .agnes ? "https://apihub.agnes-ai.com/v1" : "https://api.deepseek.com" }
+    var defaultModel: String { self == .agnes ? "agnes-2.5-flash" : "deepseek-v4-flash" }
+    var availableModels: [String] {
+        self == .agnes
+            ? ["agnes-2.5-flash", "agnes-2.0-flash"]
+            : ["deepseek-v4-flash", "deepseek-v4-pro"]
+    }
+    var website: URL {
+        URL(string: self == .agnes ? "https://agnes-ai.com" : "https://platform.deepseek.com")!
+    }
+}
+
+struct AIProviderConfiguration: Sendable {
+    let provider: AIProvider
+    let apiKey: String
+    let model: String
+    var baseURL: String { provider.baseURL }
+}
+
+enum AISettings {
+    private static let enabledKey = "ai.enabled"
+    private static let providerKey = "ai.provider"
 
     static var isEnabled: Bool {
-        UserDefaults.standard.bool(forKey: enabledKey)
+        if UserDefaults.standard.object(forKey: enabledKey) == nil {
+            return UserDefaults.standard.bool(forKey: "agnes.enabled")
+        }
+        return UserDefaults.standard.bool(forKey: enabledKey)
     }
 
-    static func setEnabled(_ value: Bool) {
-        UserDefaults.standard.set(value, forKey: enabledKey)
+    static func setEnabled(_ value: Bool) { UserDefaults.standard.set(value, forKey: enabledKey) }
+
+    static var selectedProvider: AIProvider {
+        AIProvider(rawValue: UserDefaults.standard.string(forKey: providerKey) ?? "") ?? .agnes
     }
 
-    static var model: String {
-        UserDefaults.standard.string(forKey: modelKey) ?? "agnes-2.5-flash"
+    static func setSelectedProvider(_ provider: AIProvider) {
+        UserDefaults.standard.set(provider.rawValue, forKey: providerKey)
     }
 
-    static func setModel(_ value: String) {
-        UserDefaults.standard.set(value, forKey: modelKey)
+    static func model(for provider: AIProvider) -> String {
+        if let stored = UserDefaults.standard.string(forKey: "ai.\(provider.rawValue).model"), !stored.isEmpty {
+            return stored
+        }
+        if provider == .agnes,
+           let legacy = UserDefaults.standard.string(forKey: "agnes.model"), !legacy.isEmpty {
+            return legacy
+        }
+        return provider.defaultModel
     }
 
-    /// 固定为 Agnes 网关，防止本机普通设置被篡改后把数据发到其他服务。
-    static let baseURL = "https://apihub.agnes-ai.com/v1"
-
-    static var apiKey: String? {
-        let key = SecureValueStore.get(apiKeyKey)
-        return key?.isEmpty == false ? key : nil
+    static func setModel(_ value: String, for provider: AIProvider) {
+        UserDefaults.standard.set(value, forKey: "ai.\(provider.rawValue).model")
     }
 
-    static func setApiKey(_ value: String?) {
+    static func apiKey(for provider: AIProvider) -> String? {
+        if let value = SecureValueStore.get("ai.\(provider.rawValue).apiKey"), !value.isEmpty { return value }
+        if provider == .agnes,
+           let legacy = SecureValueStore.get("agnes.apiKey"), !legacy.isEmpty { return legacy }
+        return nil
+    }
+
+    static func setApiKey(_ value: String?, for provider: AIProvider) {
+        let key = "ai.\(provider.rawValue).apiKey"
         if let value, !value.isEmpty {
-            SecureValueStore.set(value, for: apiKeyKey)
+            SecureValueStore.set(value, for: key)
         } else {
-            SecureValueStore.remove(apiKeyKey)
+            SecureValueStore.remove(key)
         }
     }
 
-    /// 是否已开启且配置了 Key。
-    static var isConfigured: Bool {
-        isEnabled && apiKey != nil
+    static var activeConfiguration: AIProviderConfiguration? {
+        let provider = selectedProvider
+        guard isEnabled, let apiKey = apiKey(for: provider) else { return nil }
+        return AIProviderConfiguration(provider: provider,
+                                       apiKey: apiKey,
+                                       model: model(for: provider))
     }
+
+    static var isConfigured: Bool { activeConfiguration != nil }
 }
 
-enum AgnesRole: String {
-    case system
-    case user
-    case assistant
-    case tool
-}
+enum AgnesRole: String { case system, user, assistant, tool }
 
-/// 发送给模型的单条消息。**content 永远是字符串**，没有图片内容分支。
+/// content 永远是字符串，没有 image/image_url 分支。
 struct AgnesWireMessage {
     var role: String
     var content: String?
@@ -89,16 +126,8 @@ struct AgnesWireToolCall: Decodable {
         self.argumentsData = argumentsData
     }
 
-    struct Function: Decodable {
-        let name: String
-        let arguments: String
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case type
-        case function
-    }
+    struct Function: Decodable { let name: String; let arguments: String }
+    enum CodingKeys: String, CodingKey { case id, type, function }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -114,129 +143,103 @@ struct AgnesWireToolCall: Decodable {
     }
 }
 
-/// 工具定义（OpenAI 兼容 functions 格式）。
 struct AgnesTool {
     let name: String
     let description: String
-    /// JSON Schema 形式的 parameters（用 [String: Any] 描述，便于构造）。
     let parameters: [String: Any]
 }
 
-enum AgnesOutcome {
-    case content(String)
-    case toolCalls([AgnesWireToolCall])
-}
+enum AgnesOutcome { case content(String), toolCalls([AgnesWireToolCall]) }
 
 enum AgnesError: LocalizedError {
     case notConfigured
     case emptyQuestion
     case invalidResponse
-    case http(status: Int, detail: String)
+    case http(provider: String, status: Int, detail: String)
     case unexpectedToolCall
 
     var errorDescription: String? {
         switch self {
-        case .notConfigured:
-            "尚未配置 Agnes API Key，请到“设置 → AI 助手”中填写。"
-        case .emptyQuestion:
-            "请输入想问的问题。"
-        case .invalidResponse:
-            "Agnes 返回的内容无法解析，请稍后重试。"
-        case let .http(status, detail):
-            "Agnes 请求失败（HTTP \(status)）：\(detail.prefix(200))"
-        case .unexpectedToolCall:
-            "模型在未提供工具时返回了工具调用。"
+        case .notConfigured: "尚未配置所选 AI 渠道，请到“设置 → AI 管家”中填写 API Key。"
+        case .emptyQuestion: "请输入想问的问题。"
+        case .invalidResponse: "AI 返回的内容无法解析，请稍后重试。"
+        case let .http(provider, status, detail):
+            "\(provider) 请求失败（HTTP \(status)）：\(detail.prefix(200))"
+        case .unexpectedToolCall: "模型在未提供工具时返回了工具调用。"
         }
     }
 }
 
-/// agnes-ai 客户端。仅支持文本对话与（可选的）工具调用，绝不包含图片。
+/// 保留原类型名以兼容现有代码；实际支持 Agnes 与 DeepSeek。
 struct AgnesClient {
     static let shared = AgnesClient()
-
     private let session: URLSession
 
-    init(session: URLSession = .shared) {
-        self.session = session
-    }
+    init(session: URLSession = .shared) { self.session = session }
 
-    private func endpointURL() throws -> URL {
-        let base = AgnesSettings.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let url = URL(string: base + "/chat/completions") else {
-            throw AgnesError.invalidResponse
-        }
-        return url
-    }
-
-    /// 简单文本对话（不使用工具）。
-    func complete(messages: [AgnesWireMessage]) async throws -> String {
-        let outcome = try await completeWithTools(messages: messages, tools: [])
+    func complete(messages: [AgnesWireMessage],
+                  configuration: AIProviderConfiguration? = nil) async throws -> String {
+        let outcome = try await completeWithTools(messages: messages,
+                                                  tools: [],
+                                                  configuration: configuration)
         switch outcome {
-        case .content(let text):
-            return text
-        case .toolCalls:
-            throw AgnesError.unexpectedToolCall
+        case .content(let text): return text
+        case .toolCalls: throw AgnesError.unexpectedToolCall
         }
     }
 
-    /// 带工具调用的对话。模型可能直接返回文字，也可能要求调用本地工具。
-    func completeWithTools(messages: [AgnesWireMessage], tools: [AgnesTool]) async throws -> AgnesOutcome {
-        guard let apiKey = AgnesSettings.apiKey else { throw AgnesError.notConfigured }
+    func completeWithTools(messages: [AgnesWireMessage],
+                           tools: [AgnesTool],
+                           configuration supplied: AIProviderConfiguration? = nil) async throws -> AgnesOutcome {
+        guard let configuration = supplied ?? AISettings.activeConfiguration else {
+            throw AgnesError.notConfigured
+        }
 
         var body: [String: Any] = [
-            "model": AgnesSettings.model,
-            "messages": messages.map { $0.dictionary },
+            "model": configuration.model,
+            "messages": messages.map(\.dictionary),
             "temperature": 0.7
         ]
         if !tools.isEmpty {
             body["tools"] = tools.map { tool in
-                [
-                    "type": "function",
-                    "function": [
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters
-                    ]
-                ]
+                ["type": "function",
+                 "function": ["name": tool.name,
+                              "description": tool.description,
+                              "parameters": tool.parameters]]
             }
             body["tool_choice"] = "auto"
         }
 
-        let url = try endpointURL()
-        var request = URLRequest(url: url, timeoutInterval: 90)
+        let base = configuration.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: base + "/chat/completions") else { throw AgnesError.invalidResponse }
+        var request = URLRequest(url: url, timeoutInterval: 120)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: request)
-
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            let detail = String(data: data, encoding: .utf8) ?? ""
-            throw AgnesError.http(status: http.statusCode, detail: detail)
+            throw AgnesError.http(provider: configuration.provider.displayName,
+                                  status: http.statusCode,
+                                  detail: String(data: data, encoding: .utf8) ?? "")
         }
-
         return try Self.parseOutcome(data: data)
     }
 
-    /// 轻量连通性测试。
-    func testConnection() async throws -> String {
-        try await complete(messages: [.text("用一句话中文回复：连接成功。", role: .user)])
+    func testConnection(configuration: AIProviderConfiguration? = nil) async throws -> String {
+        try await complete(messages: [.text("用一句话中文回复：连接成功。", role: .user)],
+                           configuration: configuration)
     }
 
     private static func parseOutcome(data: Data) throws -> AgnesOutcome {
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
-              let first = choices.first,
-              let message = first["message"] as? [String: Any] else {
+              let message = choices.first?["message"] as? [String: Any] else {
             throw AgnesError.invalidResponse
         }
-
-        let content = message["content"] as? String
-        let toolCallsRaw = message["tool_calls"] as? [[String: Any]]
-
-        if let toolCallsRaw, !toolCallsRaw.isEmpty {
-            let calls = toolCallsRaw.compactMap { raw -> AgnesWireToolCall? in
+        if let rawCalls = message["tool_calls"] as? [[String: Any]], !rawCalls.isEmpty {
+            let calls = rawCalls.compactMap { raw -> AgnesWireToolCall? in
                 guard let id = raw["id"] as? String,
                       let type = raw["type"] as? String,
                       let function = raw["function"] as? [String: Any],
@@ -249,39 +252,23 @@ struct AgnesClient {
             }
             if !calls.isEmpty { return .toolCalls(calls) }
         }
-
-        if let content, !content.isEmpty {
-            return .content(content)
-        }
-
+        if let content = message["content"] as? String, !content.isEmpty { return .content(content) }
         throw AgnesError.invalidResponse
     }
 }
 
 extension AgnesWireMessage {
-    /// 序列化为 OpenAI 兼容的请求体。结构上仅允许字符串 content。
     var dictionary: [String: Any] {
-        var result: [String: Any] = ["role": role]
-        if let content {
-            result["content"] = content
-        } else {
-            result["content"] = NSNull()
-        }
+        var result: [String: Any] = ["role": role, "content": content ?? NSNull()]
         if let toolCalls {
             result["tool_calls"] = toolCalls.map { call -> [String: Any] in
-                [
-                    "id": call.id,
-                    "type": call.type,
-                    "function": [
-                        "name": call.function.name,
-                        "arguments": call.function.arguments
-                    ]
-                ]
+                ["id": call.id,
+                 "type": call.type,
+                 "function": ["name": call.function.name,
+                              "arguments": call.function.arguments]]
             }
         }
-        if let toolCallId {
-            result["tool_call_id"] = toolCallId
-        }
+        if let toolCallId { result["tool_call_id"] = toolCallId }
         return result
     }
 }

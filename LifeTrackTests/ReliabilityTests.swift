@@ -390,8 +390,83 @@ final class ReliabilityTests: XCTestCase {
             "get_schedule",
             "get_study_stats",
             "get_travel_archives",
+            "get_travel_candidates",
             "get_sanitized_photo_summary"
         ])
+    }
+
+    func testAIProvidersUseFixedOfficialTextEndpoints() {
+        XCTAssertEqual(AIProvider.agnes.baseURL, "https://apihub.agnes-ai.com/v1")
+        XCTAssertEqual(AIProvider.deepSeek.baseURL, "https://api.deepseek.com")
+        XCTAssertEqual(AIProvider.deepSeek.defaultModel, "deepseek-v4-flash")
+        XCTAssertTrue(AIProvider.deepSeek.availableModels.contains("deepseek-v4-pro"))
+    }
+
+    func testTravelDetectionUsesRoutineAndExcludesHomePhotos() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let start = Date(timeIntervalSince1970: 1_720_000_000)
+        let home = CustomPlace(shortName: "家",
+                               latitude: 31.2,
+                               longitude: 121.4,
+                               category: .accommodation)
+        context.insert(home)
+        let session = insertSession(start: start,
+                                    coordinates: [(32.0, 121.4), (32.05, 121.4), (32.1, 121.4)],
+                                    into: context)
+        let remoteStay = StayRecord(detectedName: "异地景区",
+                                    latitude: 32.05,
+                                    longitude: 121.4,
+                                    arrivalTime: start)
+        remoteStay.duration = 60 * 60
+        context.insert(remoteStay)
+        let remotePhoto = PhotoAnalysisRecord(assetIdentifier: "remote",
+                                              creationDate: start.addingTimeInterval(30),
+                                              latitude: 32.05,
+                                              longitude: 121.4,
+                                              categories: [.landscape],
+                                              topLabels: ["mountain|0.9"],
+                                              confidence: 0.9,
+                                              faceCount: 0,
+                                              state: .completed)
+        let homePhoto = PhotoAnalysisRecord(assetIdentifier: "home",
+                                            creationDate: start.addingTimeInterval(40),
+                                            latitude: 31.2,
+                                            longitude: 121.4,
+                                            categories: [.food],
+                                            topLabels: ["food|0.9"],
+                                            confidence: 0.9,
+                                            faceCount: 0,
+                                            state: .completed)
+        context.insert(remotePhoto)
+        context.insert(homePhoto)
+
+        let suggestions = TravelArchiveDetectionService.suggestions(
+            photos: [remotePhoto, homePhoto], sessions: [session], stays: [remoteStay], places: [home],
+            timelineNodes: [], confirmed: [])
+
+        XCTAssertEqual(suggestions.count, 1)
+        XCTAssertEqual(suggestions[0].photoCount, 1)
+        XCTAssertTrue(suggestions[0].reason.contains("已排除"))
+    }
+
+    func testPhotosAloneNeverCreateTravelSuggestion() {
+        let home = CustomPlace(shortName: "宿舍",
+                               latitude: 31.2,
+                               longitude: 121.4,
+                               category: .accommodation)
+        let photo = PhotoAnalysisRecord(assetIdentifier: "far-photo-only",
+                                        creationDate: .now,
+                                        latitude: 35,
+                                        longitude: 121.4,
+                                        categories: [.landscape],
+                                        topLabels: ["sea|0.9"],
+                                        confidence: 0.9,
+                                        faceCount: 0,
+                                        state: .completed)
+        XCTAssertTrue(TravelArchiveDetectionService.suggestions(
+            photos: [photo], sessions: [], stays: [], places: [home],
+            timelineNodes: [], confirmed: []).isEmpty)
     }
 
     func testPhotoAIPrivacyFilterRemovesSensitiveData() {

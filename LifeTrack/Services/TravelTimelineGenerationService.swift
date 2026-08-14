@@ -384,13 +384,10 @@ private enum TravelTimelineDraftBuilder {
         let sessionGroups = groupSessions(input.sessions.sorted { $0.startTime < $1.startTime })
         let metas = sessionGroups.map(GroupMeta.init)
         var photosByGroup = Array(repeating: [TimelinePhotoSnapshot](), count: sessionGroups.count)
-        var unassignedPhotos: [TimelinePhotoSnapshot] = []
 
         for photo in input.photos {
             if let index = bestSessionGroup(for: photo, metas: metas) {
                 photosByGroup[index].append(photo)
-            } else {
-                unassignedPhotos.append(photo)
             }
         }
 
@@ -400,7 +397,6 @@ private enum TravelTimelineDraftBuilder {
                 trips.append(draft)
             }
         }
-        trips.append(contentsOf: buildPhotoOnlyTrips(unassignedPhotos))
         return trips.sorted { $0.startTime > $1.startTime }
     }
 
@@ -450,14 +446,16 @@ private enum TravelTimelineDraftBuilder {
                 timeGap = min(abs(photo.date.timeIntervalSince(meta.start)),
                               abs(photo.date.timeIntervalSince(meta.end)))
             }
-            let sameDay = Calendar.current.isDate(photo.date, inSameDayAs: meta.start) ||
-                Calendar.current.isDate(photo.date, inSameDayAs: meta.end)
-            guard timeGap <= 2 * 60 * 60 || sameDay else { continue }
+            guard timeGap <= 2 * 60 * 60 else { continue }
 
             var distance = 0.0
             if let coordinate = photo.coordinate, !meta.sampledPoints.isEmpty {
                 distance = meta.sampledPoints.map { coordinate.distance(to: $0.coordinate) }.min() ?? .greatestFiniteMagnitude
-                guard distance <= 5_000 || timeGap <= 60 * 60 else { continue }
+                // 有 GPS 时必须与轨迹空间接近；仅时间接近不能把家里的照片并入异地旅行。
+                guard distance <= 5_000 else { continue }
+            } else {
+                // 无 GPS 时采取保守策略，只允许轨迹时段前后半小时内的照片。
+                guard timeGap <= 30 * 60 else { continue }
             }
             let score = timeGap / 3_600 + distance / 2_000
             if best == nil || score < best!.score { best = (index, score) }

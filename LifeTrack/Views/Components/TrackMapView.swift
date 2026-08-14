@@ -788,7 +788,7 @@ private final class TrackGradientRenderer: MKOverlayRenderer {
             guard count > 1 else { continue }
             var coords = Array(repeating: CLLocationCoordinate2D(), count: count)
             poly.getCoordinates(&coords, range: NSRange(location: 0, length: count))
-            var path = CGMutablePath()
+            let path = CGMutablePath()
             path.move(to: point(for: MKMapPoint(coords[0])))
             for i in 1..<count {
                 path.addLine(to: point(for: MKMapPoint(coords[i])))

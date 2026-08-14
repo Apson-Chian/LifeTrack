@@ -52,7 +52,7 @@ enum AssistantFeatureContext: String, Identifiable, CaseIterable {
         case .photos:
             "用户正在查看照片智能整理。只能使用经过脱敏聚合的照片分类与通用标签回答。"
         case .travel:
-            "用户正在查看旅行归档。优先结合已确认旅行、出行、地点和脱敏照片摘要回答。"
+            "用户正在查看旅行归档。先调用旅行候选工具区分日常与旅行，再结合已确认旅行、出行、地点和脱敏照片摘要回答。不能把照片本身当作旅行证据。"
         }
     }
 
@@ -71,7 +71,7 @@ enum AssistantFeatureContext: String, Identifiable, CaseIterable {
         case .photos:
             ["最近照片主要记录了什么？", "我的照片分类有什么变化？", "结合脱敏照片摘要回顾最近生活"]
         case .travel:
-            ["帮我总结最近一次旅行", "我的旅行通常有哪些特点？", "结合旅行和运动记录写一段回忆"]
+            ["哪些记录应该整理成旅行？", "帮我总结最近一次旅行", "为什么这段被判断为旅行？"]
         }
     }
 }

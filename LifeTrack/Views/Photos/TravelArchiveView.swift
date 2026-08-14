@@ -21,11 +21,35 @@ struct TravelArchiveView: View {
                                                   confirmed: archives)
     }
 
+    private var routineSummary: String {
+        TravelArchiveDetectionService.routineSummary(places: places, stays: stays)
+    }
+
     var body: some View {
         List {
             Section {
+                AssistantFeatureCard(context: .travel,
+                                     title: "让 AI 管家整理旅行",
+                                     subtitle: "结合日常活动圈、异地轨迹和脱敏照片主题，回答和整理你的旅行")
+
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "house.and.flag.fill")
+                        .foregroundStyle(.indigo)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("已识别日常活动圈")
+                            .font(.subheadline.weight(.semibold))
+                        Text(routineSummary)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } footer: {
+                Text("先根据家、学校和长期高频停留排除日常活动。照片不会产生旅行建议，只在本机核对是否属于已经识别出的旅行时段。")
+            }
+
+            Section {
                 if suggestions.isEmpty {
-                    Text("暂未发现明显旅行。建议会综合照片 GPS、轨迹、停留地点和与日常区域的距离，仅在本机计算。")
+                    Text("暂未发现明显旅行。只有明显离开日常活动圈、并有异地轨迹或停留依据时才会建议归档。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else {
@@ -39,7 +63,8 @@ struct TravelArchiveView: View {
                                              photoCount: suggestion.photoCount,
                                              placeCount: suggestion.placeCount,
                                              distance: suggestion.totalDistance,
-                                             isSuggestion: true)
+                                             isSuggestion: true,
+                                             detail: suggestion.reason)
                         }
                         .buttonStyle(.plain)
                     }
@@ -47,7 +72,7 @@ struct TravelArchiveView: View {
             } header: {
                 Text("旅行建议")
             } footer: {
-                Text("建议不会自动写入旅行归档；点开并确认后才会保存。")
+                Text("AI 可以帮助整理与总结，但建议不会自动写入归档；你确认后才会保存。")
             }
 
             if !archives.isEmpty {
@@ -62,7 +87,8 @@ struct TravelArchiveView: View {
                                              photoCount: record.photoCount,
                                              placeCount: record.placeCount,
                                              distance: record.totalDistance,
-                                             isSuggestion: false)
+                                             isSuggestion: false,
+                                             detail: nil)
                         }
                         .buttonStyle(.plain)
                     }
@@ -108,6 +134,7 @@ private struct TravelArchiveRow: View {
     let placeCount: Int
     let distance: Double
     let isSuggestion: Bool
+    let detail: String?
 
     private var accent: Color { isSuggestion ? .orange : .accentColor }
 
@@ -144,6 +171,13 @@ private struct TravelArchiveRow: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+                if let detail {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                }
             }
         }
         .padding(14)
@@ -183,6 +217,8 @@ private struct TravelArchiveEditorTarget: Identifiable {
     let placeCount: Int
     let totalDistance: Double
     let mainPlaces: [String]
+    let reason: String?
+    let routineSummary: String?
     let record: TravelArchiveRecord?
 
     init(suggestion: TravelArchiveSuggestion) {
@@ -194,6 +230,8 @@ private struct TravelArchiveEditorTarget: Identifiable {
         placeCount = suggestion.placeCount
         totalDistance = suggestion.totalDistance
         mainPlaces = suggestion.mainPlaces
+        reason = suggestion.reason
+        routineSummary = suggestion.routineSummary
         record = nil
     }
 
@@ -206,6 +244,8 @@ private struct TravelArchiveEditorTarget: Identifiable {
         placeCount = record.placeCount
         totalDistance = record.totalDistance
         mainPlaces = record.mainPlaces
+        reason = nil
+        routineSummary = nil
         self.record = record
     }
 }
@@ -279,6 +319,14 @@ private struct TravelArchiveEditorView: View {
                     LabeledContent("照片", value: "\(target.photoCount) 张")
                     LabeledContent("地点", value: "\(mainPlaces.count) 个")
                     LabeledContent("移动距离", value: Formatters.distance(target.totalDistance))
+                    if let routineSummary = target.routineSummary {
+                        LabeledContent("已排除", value: routineSummary)
+                    }
+                    if let reason = target.reason {
+                        Text(reason)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .navigationTitle(target.record == nil ? "确认旅行建议" : "编辑旅行归档")
