@@ -20,6 +20,14 @@ enum TravelTimelineGenerationService {
         set { UserDefaults.standard.set(newValue, forKey: timelineSignatureKey) }
     }
 
+    nonisolated static func isHistoricalPhotoTravelEvidence(coordinate: CLLocationCoordinate2D,
+                                                            routineAnchors: [CLLocationCoordinate2D],
+                                                            groupPhotoCount: Int) -> Bool {
+        guard !routineAnchors.isEmpty else { return false }
+        let distance = routineAnchors.map { coordinate.distance(to: $0) }.min() ?? 0
+        return distance >= 50_000 && (groupPhotoCount >= 2 || distance >= 100_000)
+    }
+
     static func refresh(context: ModelContext,
                         sessions: [ActivitySession]) async -> TravelTimelineRefreshSummary {
         let signature = inputSignature(sessions: sessions, context: context)
@@ -44,10 +52,57 @@ enum TravelTimelineGenerationService {
         PersistenceService.save(context, operation: "保存旅行时间线")
         await resolveMissingPlaceNames(in: context)
 
-        lastSignature = signature
+        lastSignature = inputSignature(sessions: sessions, context: context)
         return TravelTimelineRefreshSummary(tripCount: drafts.count,
                                             updatedTripCount: updatedTripCount,
                                             analyzedPhotoCount: analyzedPhotoCount)
+    }
+
+    /// 只用已有 SwiftData 缓存修复/补齐时间线，不读取相册、不运行 Vision、也不请求地名。
+    /// 页面进入时使用这个快速路径，避免用户为了查看旧记录而等待整库扫描。
+    static func rebuildFromCache(context: ModelContext,
+                                 sessions: [ActivitySession]) async -> TravelTimelineRefreshSummary {
+        let photoRecords = (try? context.fetch(FetchDescriptor<PhotoAnalysisRecord>())) ?? []
+        let input = TimelineGenerationInput(sessions: sessions, photos: photoRecords)
+        let drafts = await Task.detached(priority: .utility) {
+            TravelTimelineDraftBuilder.build(input)
+        }.value
+        let updatedTripCount = reconcile(drafts: drafts, in: context)
+        PersistenceService.save(context, operation: "修复旅行时间线缓存")
+        return TravelTimelineRefreshSummary(tripCount: drafts.count,
+                                            updatedTripCount: updatedTripCount,
+                                            analyzedPhotoCount: 0)
+    }
+
+    /// 使用全部照片的时间/GPS 元数据恢复较早的异地行程。这里只枚举 PhotoKit 元数据，
+    /// 不加载图片、不运行 Vision；只有明显离开日常活动圈的照片才会成为照片行程。
+    static func rebuildFromPhotoMetadata(context: ModelContext,
+                                         sessions: [ActivitySession],
+                                         places: [CustomPlace],
+                                         stays: [StayRecord]) async -> TravelTimelineRefreshSummary {
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard status == .authorized || status == .limited else {
+            return TravelTimelineRefreshSummary(tripCount: 0, updatedTripCount: 0, analyzedPhotoCount: 0)
+        }
+        PhotoLibraryChangeMonitor.shared.ensureRegistered()
+        let generation = PhotoLibraryChangeMonitor.shared.generation
+        let descriptors = await Task.detached(priority: .utility) {
+            PhotoLibraryScanCache.descriptors(currentGeneration: generation)
+        }.value
+        let photoRecords = (try? context.fetch(FetchDescriptor<PhotoAnalysisRecord>())) ?? []
+        let anchors = TravelArchiveDetectionService.routineAnchors(places: places, stays: stays)
+        let input = TimelineGenerationInput(sessions: sessions,
+                                            photos: photoRecords,
+                                            descriptors: descriptors,
+                                            routineAnchors: anchors)
+        let drafts = await Task.detached(priority: .utility) {
+            TravelTimelineDraftBuilder.build(input)
+        }.value
+        let updatedTripCount = reconcile(drafts: drafts, in: context)
+        PersistenceService.save(context, operation: "恢复历史旅行时间线")
+        return TravelTimelineRefreshSummary(tripCount: drafts.count,
+                                            updatedTripCount: updatedTripCount,
+                                            analyzedPhotoCount: 0)
     }
 
     private static func inputSignature(sessions: [ActivitySession],
@@ -172,10 +227,9 @@ enum TravelTimelineGenerationService {
             updatedCount += 1
         }
 
-        for staleTrip in existingByKey.values {
-            context.delete(staleTrip)
-        }
-        return updatedCount + existingByKey.count
+        // 时间线是用户的历史记录。照片权限变化、分批分析或识别规则升级都可能让
+        // 一次刷新只生成部分草稿，因此绝不能据此删除本轮未出现的旧旅行。
+        return updatedCount
     }
 
     private static func reconcile(nodes drafts: [TravelTimelineNodeDraft],
@@ -219,7 +273,7 @@ enum TravelTimelineGenerationService {
         }
     }
 
-    private static let maximumResolutionsPerRefresh = 24
+    private static let maximumResolutionsPerRefresh = 6
     private static let geocodePauseNanos: UInt64 = 200_000_000
 
     private static func resolveMissingPlaceNames(in context: ModelContext) async {
@@ -268,9 +322,13 @@ enum TravelTimelineGenerationService {
 private struct TimelineGenerationInput: Sendable {
     let sessions: [TimelineSessionSnapshot]
     let photos: [TimelinePhotoSnapshot]
+    let routineAnchors: [CLLocationCoordinate2D]
 
     @MainActor
-    init(sessions: [ActivitySession], photos: [PhotoAnalysisRecord]) {
+    init(sessions: [ActivitySession],
+         photos: [PhotoAnalysisRecord],
+         descriptors: [PhotoLibraryAssetDescriptor] = [],
+         routineAnchors: [CLLocationCoordinate2D] = []) {
         self.sessions = sessions.compactMap { session in
             let points = session.trackPoints
                 .filter { $0.isUsableForAnalysis && $0.horizontalAccuracy >= 0 && $0.horizontalAccuracy <= 200 }
@@ -288,7 +346,19 @@ private struct TimelineGenerationInput: Sendable {
                                            points: points,
                                            stays: stays)
         }
-        self.photos = photos.map(TimelinePhotoSnapshot.init)
+        let cached = Dictionary(uniqueKeysWithValues: photos.map {
+            ($0.assetIdentifier, TimelinePhotoSnapshot($0))
+        })
+        if descriptors.isEmpty {
+            self.photos = Array(cached.values)
+        } else {
+            self.photos = descriptors.map { descriptor in
+                TimelinePhotoSnapshot(descriptor,
+                                      cachedCategories: cached[descriptor.id]?.categories ?? [],
+                                      analyzedAt: cached[descriptor.id]?.analyzedAt)
+            }
+        }
+        self.routineAnchors = routineAnchors
     }
 }
 
@@ -341,13 +411,29 @@ private struct TimelinePhotoSnapshot: Sendable {
     init(_ record: PhotoAnalysisRecord) {
         id = record.assetIdentifier
         date = record.creationDate
-        if let latitude = record.originalLatitude, let longitude = record.originalLongitude {
+        if let latitude = record.originalLatitude ?? record.latitude,
+           let longitude = record.originalLongitude ?? record.longitude {
             coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
         } else {
             coordinate = nil
         }
         categories = record.categories
         analyzedAt = record.analyzedAt
+    }
+
+
+    init(_ descriptor: PhotoLibraryAssetDescriptor,
+         cachedCategories: [PhotoSmartCategory] = [],
+         analyzedAt cachedAnalyzedAt: Date? = nil) {
+        id = descriptor.id
+        date = descriptor.creationDate
+        if let latitude = descriptor.originalLatitude, let longitude = descriptor.originalLongitude {
+            coordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        } else {
+            coordinate = nil
+        }
+        categories = cachedCategories
+        analyzedAt = cachedAnalyzedAt ?? descriptor.creationDate
     }
 }
 
@@ -400,7 +486,8 @@ private enum TravelTimelineDraftBuilder {
                 trips.append(draft)
             }
         }
-        trips.append(contentsOf: buildPhotoOnlyTrips(unassignedPhotos))
+        trips.append(contentsOf: buildPhotoOnlyTrips(unassignedPhotos,
+                                                     routineAnchors: input.routineAnchors))
         return trips.sorted { $0.startTime > $1.startTime }
     }
 
@@ -450,14 +537,16 @@ private enum TravelTimelineDraftBuilder {
                 timeGap = min(abs(photo.date.timeIntervalSince(meta.start)),
                               abs(photo.date.timeIntervalSince(meta.end)))
             }
-            let sameDay = Calendar.current.isDate(photo.date, inSameDayAs: meta.start) ||
-                Calendar.current.isDate(photo.date, inSameDayAs: meta.end)
-            guard timeGap <= 2 * 60 * 60 || sameDay else { continue }
+            guard timeGap <= 2 * 60 * 60 else { continue }
 
             var distance = 0.0
             if let coordinate = photo.coordinate, !meta.sampledPoints.isEmpty {
                 distance = meta.sampledPoints.map { coordinate.distance(to: $0.coordinate) }.min() ?? .greatestFiniteMagnitude
-                guard distance <= 5_000 || timeGap <= 60 * 60 else { continue }
+                // 有 GPS 时必须与轨迹空间接近；仅时间接近不能把家里的照片并入异地旅行。
+                guard distance <= 5_000 else { continue }
+            } else {
+                // 无 GPS 时采取保守策略，只允许轨迹时段前后半小时内的照片。
+                guard timeGap <= 30 * 60 else { continue }
             }
             let score = timeGap / 3_600 + distance / 2_000
             if best == nil || score < best!.score { best = (index, score) }
@@ -502,14 +591,27 @@ private enum TravelTimelineDraftBuilder {
                                        nodes: nodes.sorted { $0.startTime < $1.startTime })
     }
 
-    private static func buildPhotoOnlyTrips(_ photos: [TimelinePhotoSnapshot]) -> [TravelTimelineTripDraft] {
-        let located = photos.filter { $0.coordinate != nil }
+    private static func buildPhotoOnlyTrips(_ photos: [TimelinePhotoSnapshot],
+                                            routineAnchors: [CLLocationCoordinate2D]) -> [TravelTimelineTripDraft] {
+        guard !routineAnchors.isEmpty else { return [] }
+        let located = photos.filter { photo in
+            guard let coordinate = photo.coordinate else { return false }
+            return nearestDistance(coordinate, to: routineAnchors) >= 50_000
+        }
         let byDay = Dictionary(grouping: located) { Calendar.current.startOfDay(for: $0.date) }
         return byDay.flatMap { day, dayPhotos in
             spatialPhotoGroups(dayPhotos).compactMap { group -> TravelTimelineTripDraft? in
                 guard let first = group.min(by: { $0.date < $1.date }),
                       let last = group.max(by: { $0.date < $1.date }),
                       let coordinate = first.coordinate else { return nil }
+                // 两张异地照片，或一张距离日常圈超过 100 km 的照片，才足以恢复为历史行程。
+                guard TravelTimelineGenerationService.isHistoricalPhotoTravelEvidence(
+                    coordinate: coordinate,
+                    routineAnchors: routineAnchors,
+                    groupPhotoCount: group.count
+                ) else {
+                    return nil
+                }
                 var nodes = buildPhotoNodes(group)
                 attach(photos: group, to: &nodes)
                 let route = group.sorted { $0.date < $1.date }.compactMap { photo -> TravelTimelineRoutePoint? in
@@ -521,7 +623,7 @@ private enum TravelTimelineDraftBuilder {
                 }
                 let bucket = "\(Int(coordinate.latitude * 2)):\(Int(coordinate.longitude * 2))"
                 return TravelTimelineTripDraft(stableKey: "photo:\(Int(day.timeIntervalSince1970)):\(bucket)",
-                                               title: tripTitle(start: first.date, end: last.date),
+                                               title: "\(tripTitle(start: first.date, end: last.date)) · 照片恢复",
                                                startTime: first.date,
                                                endTime: max(last.date, first.date),
                                                totalDistance: photoRouteDistance(group),
@@ -857,6 +959,11 @@ private enum TravelTimelineDraftBuilder {
         return zip(points, points.dropFirst()).reduce(0) { result, pair in
             result + pair.0.coordinate.distance(to: pair.1.coordinate)
         }
+    }
+
+    private static func nearestDistance(_ coordinate: CLLocationCoordinate2D,
+                                        to anchors: [CLLocationCoordinate2D]) -> CLLocationDistance {
+        anchors.map { coordinate.distance(to: $0) }.min() ?? .greatestFiniteMagnitude
     }
 
     private static func tripTitle(start: Date, end: Date) -> String {

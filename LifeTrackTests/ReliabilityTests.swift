@@ -379,16 +379,224 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertEqual(nodes.first?.photoIdentifiers, ["keep-me"])
     }
 
-    func testAgentToolsCannotReadPhotoData() {
+    func testAgentToolsCoverWholeAppWithSanitizedPhotoAccess() {
         let toolNames = Set(LifeAgentService.tools.map(\.name))
-        XCTAssertFalse(toolNames.contains { $0.localizedCaseInsensitiveContains("photo") })
         XCTAssertEqual(toolNames, [
             "get_activity_summary",
+            "get_activity_range",
             "get_stay_summary",
+            "get_place_overview",
+            "get_journey_summary",
             "get_schedule",
             "get_study_stats",
-            "get_travel_archives"
+            "get_travel_archives",
+            "get_travel_candidates",
+            "get_sanitized_photo_summary"
         ])
+    }
+
+    func testAIProvidersUseFixedOfficialTextEndpoints() {
+        XCTAssertEqual(AIProvider.agnes.baseURL, "https://apihub.agnes-ai.com/v1")
+        XCTAssertEqual(AIProvider.deepSeek.baseURL, "https://api.deepseek.com")
+        XCTAssertEqual(AIProvider.deepSeek.defaultModel, "deepseek-v4-flash")
+        XCTAssertTrue(AIProvider.deepSeek.availableModels.contains("deepseek-v4-pro"))
+    }
+
+    func testAssistantDisplayTextRemovesMarkdownNoise() {
+        XCTAssertEqual("**重点**\n* 第一项\n### 小结".assistantDisplayText,
+                       "重点\n• 第一项\n小结")
+    }
+
+    func testTravelDetectionUsesRoutineAndExcludesHomePhotos() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let start = Date(timeIntervalSince1970: 1_720_000_000)
+        let home = CustomPlace(shortName: "家",
+                               latitude: 31.2,
+                               longitude: 121.4,
+                               category: .accommodation)
+        context.insert(home)
+        let session = insertSession(start: start,
+                                    coordinates: [(32.0, 121.4), (32.05, 121.4), (32.1, 121.4)],
+                                    into: context)
+        let remoteStay = StayRecord(detectedName: "异地景区",
+                                    latitude: 32.05,
+                                    longitude: 121.4,
+                                    arrivalTime: start)
+        remoteStay.duration = 60 * 60
+        context.insert(remoteStay)
+        let remotePhoto = PhotoAnalysisRecord(assetIdentifier: "remote",
+                                              creationDate: start.addingTimeInterval(30),
+                                              latitude: 32.05,
+                                              longitude: 121.4,
+                                              categories: [.landscape],
+                                              topLabels: ["mountain|0.9"],
+                                              confidence: 0.9,
+                                              faceCount: 0,
+                                              state: .completed)
+        let homePhoto = PhotoAnalysisRecord(assetIdentifier: "home",
+                                            creationDate: start.addingTimeInterval(40),
+                                            latitude: 31.2,
+                                            longitude: 121.4,
+                                            categories: [.food],
+                                            topLabels: ["food|0.9"],
+                                            confidence: 0.9,
+                                            faceCount: 0,
+                                            state: .completed)
+        context.insert(remotePhoto)
+        context.insert(homePhoto)
+
+        let suggestions = TravelArchiveDetectionService.suggestions(
+            photos: [remotePhoto, homePhoto], sessions: [session], stays: [remoteStay], places: [home],
+            timelineNodes: [], confirmed: [])
+
+        XCTAssertEqual(suggestions.count, 1)
+        XCTAssertEqual(suggestions[0].photoCount, 1)
+        XCTAssertTrue(suggestions[0].reason.contains("已排除"))
+    }
+
+    func testPhotosAloneNeverCreateTravelSuggestion() {
+        let home = CustomPlace(shortName: "宿舍",
+                               latitude: 31.2,
+                               longitude: 121.4,
+                               category: .accommodation)
+        let photo = PhotoAnalysisRecord(assetIdentifier: "far-photo-only",
+                                        creationDate: .now,
+                                        latitude: 35,
+                                        longitude: 121.4,
+                                        categories: [.landscape],
+                                        topLabels: ["sea|0.9"],
+                                        confidence: 0.9,
+                                        faceCount: 0,
+                                        state: .completed)
+        XCTAssertTrue(TravelArchiveDetectionService.suggestions(
+            photos: [photo], sessions: [], stays: [], places: [home],
+            timelineNodes: [], confirmed: []).isEmpty)
+    }
+
+    func testTodayPhotosRequireGPSOrTimeMatchToRecordedTrack() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let start = Calendar.current.date(bySettingHour: 10, minute: 0, second: 0, of: .now)!
+        let session = insertSession(start: start,
+                                    coordinates: [(31.20, 121.40), (31.201, 121.401), (31.202, 121.402)],
+                                    into: context)
+        let matchingGPS = PhotoLibraryAssetDescriptor(id: "near-gps",
+                                                      creationDate: start.addingTimeInterval(30),
+                                                      displayLatitude: 31.201,
+                                                      displayLongitude: 121.401,
+                                                      originalLatitude: 31.201,
+                                                      originalLongitude: 121.401,
+                                                      isSelfie: false)
+        let matchingTime = PhotoLibraryAssetDescriptor(id: "time-only",
+                                                       creationDate: start.addingTimeInterval(60),
+                                                       displayLatitude: nil,
+                                                       displayLongitude: nil,
+                                                       originalLatitude: nil,
+                                                       originalLongitude: nil,
+                                                       isSelfie: false)
+        let farGPS = PhotoLibraryAssetDescriptor(id: "far-gps",
+                                                 creationDate: start.addingTimeInterval(30),
+                                                 displayLatitude: 35,
+                                                 displayLongitude: 121.4,
+                                                 originalLatitude: 35,
+                                                 originalLongitude: 121.4,
+                                                 isSelfie: false)
+
+        let moments = TodayPhotoTrackService.moments(descriptors: [matchingGPS, matchingTime, farGPS],
+                                                     sessions: [session])
+
+        XCTAssertEqual(Set(moments.map(\.assetIdentifier)), ["near-gps", "time-only"])
+        XCTAssertTrue(moments.first { $0.assetIdentifier == "near-gps" }?.usesPhotoLocation == true)
+        XCTAssertTrue(moments.first { $0.assetIdentifier == "time-only" }?.usesPhotoLocation == false)
+    }
+
+    func testHistoricalExerciseCanDisplayAssociatedPhotos() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let start = Date(timeIntervalSince1970: 1_650_000_000)
+        let session = insertSession(start: start,
+                                    coordinates: [(31.20, 121.40), (31.201, 121.401)],
+                                    into: context)
+        let descriptor = PhotoLibraryAssetDescriptor(id: "historical-exercise-photo",
+                                                     creationDate: start.addingTimeInterval(30),
+                                                     displayLatitude: 31.201,
+                                                     displayLongitude: 121.401,
+                                                     originalLatitude: 31.201,
+                                                     originalLongitude: 121.401,
+                                                     isSelfie: false)
+
+        let moments = TodayPhotoTrackService.momentsForRecordedTracks(descriptors: [descriptor],
+                                                                      sessions: [session])
+
+        XCTAssertEqual(moments.map(\.assetIdentifier), ["historical-exercise-photo"])
+    }
+
+    func testHistoricalPhotoTravelEvidenceExcludesRoutineAreaAndRestoresRemoteDays() {
+        let home = CLLocationCoordinate2D(latitude: 31.20, longitude: 121.40)
+        let nearby = CLLocationCoordinate2D(latitude: 31.25, longitude: 121.45)
+        let remote = CLLocationCoordinate2D(latitude: 39.90, longitude: 116.40)
+
+        XCTAssertFalse(TravelTimelineGenerationService.isHistoricalPhotoTravelEvidence(
+            coordinate: nearby, routineAnchors: [home], groupPhotoCount: 20))
+        XCTAssertTrue(TravelTimelineGenerationService.isHistoricalPhotoTravelEvidence(
+            coordinate: remote, routineAnchors: [home], groupPhotoCount: 1))
+    }
+
+    func testTimelineCacheRebuildNeverDeletesHistoricalTripsMissingFromCurrentDrafts() async throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let historical = TravelTimelineTrip(stableKey: "photo:historical",
+                                            title: "历史旅行",
+                                            startTime: Date(timeIntervalSince1970: 1_650_000_000),
+                                            endTime: Date(timeIntervalSince1970: 1_650_003_600),
+                                            totalDistance: 12_000,
+                                            sourceFingerprint: "legacy-source",
+                                            routePoints: [])
+        context.insert(historical)
+        try context.save()
+
+        _ = await TravelTimelineGenerationService.rebuildFromCache(context: context, sessions: [])
+
+        let trips = try context.fetch(FetchDescriptor<TravelTimelineTrip>())
+        XCTAssertEqual(trips.map(\.stableKey), ["photo:historical"])
+    }
+
+    func testPhotoAIPrivacyFilterRemovesSensitiveData() {
+        let record = PhotoAnalysisRecord(
+            assetIdentifier: "secret-asset-id",
+            creationDate: Date(timeIntervalSince1970: 1_700_000_000),
+            latitude: 31.234567,
+            longitude: 121.456789,
+            categories: [.landscape, .people, .selfie],
+            topLabels: ["mountain|0.98", "person|0.99", "passport|0.91", "beach|0.80"],
+            confidence: 0.98,
+            faceCount: 3,
+            state: .completed,
+            linkedSessionID: UUID()
+        )
+
+        let summary = PhotoAIPrivacyFilter.summary(records: [record], days: 30)
+        XCTAssertTrue(summary.contains("风景"))
+        XCTAssertTrue(summary.contains("mountain"))
+        XCTAssertTrue(summary.contains("beach"))
+        XCTAssertFalse(summary.contains("- 人物："))
+        XCTAssertFalse(summary.contains("- 自拍："))
+        XCTAssertFalse(summary.contains("person"))
+        XCTAssertFalse(summary.contains("passport"))
+        XCTAssertFalse(summary.contains("secret-asset-id"))
+        XCTAssertFalse(summary.contains("31.234567"))
+        XCTAssertFalse(summary.contains("121.456789"))
+        XCTAssertFalse(summary.contains("1700000000"))
+        XCTAssertFalse(summary.contains("3 张脸"))
+    }
+
+    func testAgnesWireMessageHasNoImageContentBranch() {
+        let dictionary = AgnesWireMessage.text("只发送文字", role: .user).dictionary
+        XCTAssertEqual(dictionary["content"] as? String, "只发送文字")
+        XCTAssertNil(dictionary["image_url"])
+        XCTAssertNil(dictionary["image"])
+        XCTAssertFalse(String(describing: dictionary).contains("base64"))
     }
 
     func testAgentSchemaMigratesFromV3ToV4() throws {

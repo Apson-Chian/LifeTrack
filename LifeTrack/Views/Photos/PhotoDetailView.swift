@@ -34,7 +34,8 @@ struct PhotoDetailItem: Identifiable {
 
     init(assetIdentifier: String,
          creationDate: Date,
-         coordinate: CLLocationCoordinate2D?) {
+         coordinate: CLLocationCoordinate2D?,
+         linkedSessionID: UUID? = nil) {
         self.assetIdentifier = assetIdentifier
         self.creationDate = creationDate
         self.coordinate = coordinate
@@ -42,7 +43,7 @@ struct PhotoDetailItem: Identifiable {
         labels = []
         confidence = nil
         faceCount = nil
-        linkedSessionID = nil
+        self.linkedSessionID = linkedSessionID
     }
 }
 

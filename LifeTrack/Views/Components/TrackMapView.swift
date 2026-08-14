@@ -9,6 +9,8 @@ struct TrackMapView: UIViewRepresentable {
     var style: TrackMapStyle = .standard
     var colorMode: TrackColorMode = .speed
     var focusedCoordinate: CLLocationCoordinate2D? = nil
+    var photoMoments: [TrackPhotoMoment] = []
+    var onPhotoTap: (String) -> Void = { _ in }
     var onLongPress: (CLLocationCoordinate2D) -> Void
 
     func makeUIView(context: Context) -> MKMapView {
@@ -35,6 +37,9 @@ struct TrackMapView: UIViewRepresentable {
         let displayCoordinates = displayCoordinates(from: points, segments: displaySegments)
         addTrackOverlays(to: map, points: points, segments: displaySegments, coordinator: context.coordinator)
         addEndpointAnnotations(to: map, coordinates: displayCoordinates)
+        for moment in photoMoments {
+            map.addAnnotation(TrackPhotoAnnotation(moment: moment))
+        }
         if let focusedCoordinate {
             let annotation = MKPointAnnotation()
             annotation.coordinate = focusedCoordinate
@@ -307,6 +312,17 @@ struct TrackMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            if let photo = annotation as? TrackPhotoAnnotation {
+                let identifier = "TrackPhotoAnnotation"
+                let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) as? MKMarkerAnnotationView ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: identifier)
+                view.annotation = photo
+                view.glyphImage = UIImage(systemName: "photo.fill")
+                view.markerTintColor = .systemIndigo
+                view.glyphTintColor = .white
+                view.displayPriority = .required
+                view.canShowCallout = true
+                return view
+            }
             guard let endpoint = annotation as? TrackEndpointAnnotation else { return nil }
             let identifier = "TrackEndpointAnnotation"
             let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) as? MKMarkerAnnotationView ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: identifier)
@@ -317,6 +333,36 @@ struct TrackMapView: UIViewRepresentable {
             view.displayPriority = .required
             return view
         }
+
+        func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
+            guard let photo = view.annotation as? TrackPhotoAnnotation else { return }
+            parent.onPhotoTap(photo.assetIdentifier)
+            mapView.deselectAnnotation(photo, animated: false)
+        }
+    }
+}
+
+struct TrackPhotoMoment: Identifiable {
+    let assetIdentifier: String
+    let creationDate: Date
+    let coordinate: CLLocationCoordinate2D
+    let sessionID: UUID
+    let usesPhotoLocation: Bool
+
+    var id: String { assetIdentifier }
+}
+
+private final class TrackPhotoAnnotation: NSObject, MKAnnotation {
+    let assetIdentifier: String
+    let coordinate: CLLocationCoordinate2D
+    let title: String?
+    let subtitle: String?
+
+    init(moment: TrackPhotoMoment) {
+        assetIdentifier = moment.assetIdentifier
+        coordinate = moment.coordinate
+        title = "轨迹照片"
+        subtitle = moment.creationDate.formatted(date: .omitted, time: .shortened)
     }
 }
 
@@ -788,7 +834,7 @@ private final class TrackGradientRenderer: MKOverlayRenderer {
             guard count > 1 else { continue }
             var coords = Array(repeating: CLLocationCoordinate2D(), count: count)
             poly.getCoordinates(&coords, range: NSRange(location: 0, length: count))
-            var path = CGMutablePath()
+            let path = CGMutablePath()
             path.move(to: point(for: MKMapPoint(coords[0])))
             for i in 1..<count {
                 path.addLine(to: point(for: MKMapPoint(coords[i])))

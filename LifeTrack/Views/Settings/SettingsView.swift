@@ -105,9 +105,9 @@ struct SettingsView: View {
                     NavigationLink {
                         AISettingsView()
                     } label: {
-                        Label("AI 助手（agnes-ai）", systemImage: "sparkles")
+                        Label("AI 管家", systemImage: "sparkles")
                     }
-                    Text("接入免费 agnes-ai，基于受限的文字/数值数据生成生活与学习洞察。AI 无权读取照片或照片分析结果。")
+                    Text("可切换 Agnes 或 DeepSeek，支持整个 App 的连续问答、后台生成与旅行整理。AI 了解你的记录，但不会收到照片图像、人物信息、坐标或单张照片详情。")
                         .font(.footnote)
                 }
                 Section("关于与帮助") {

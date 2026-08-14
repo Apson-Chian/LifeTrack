@@ -40,6 +40,9 @@ struct PhotoSmartOrganizerView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
+                AssistantToolbarLink(context: .photos)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     PhotoLibraryScanCache.invalidate()
                     Task { await refreshLibrary() }
@@ -538,7 +541,7 @@ struct SmartCategoryPhotosView: View {
                 spacing: 3,
                 linkedBadge: true,
                 onDelete: { item in
-                    try? await PhotoLibraryMutationService.deletePhoto(
+                    _ = try? await PhotoLibraryMutationService.deletePhoto(
                         assetIdentifier: item.assetIdentifier,
                         container: modelContext.container)
                 }
@@ -694,7 +697,7 @@ struct SmartTravelAlbumDetailView: View {
                     spacing: 3,
                     linkedBadge: true,
                     onDelete: { item in
-                        try? await PhotoLibraryMutationService.deletePhoto(
+                        _ = try? await PhotoLibraryMutationService.deletePhoto(
                             assetIdentifier: item.assetIdentifier,
                             container: modelContext.container)
                     }
