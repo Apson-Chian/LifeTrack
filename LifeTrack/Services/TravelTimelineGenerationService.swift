@@ -44,10 +44,26 @@ enum TravelTimelineGenerationService {
         PersistenceService.save(context, operation: "保存旅行时间线")
         await resolveMissingPlaceNames(in: context)
 
-        lastSignature = signature
+        lastSignature = inputSignature(sessions: sessions, context: context)
         return TravelTimelineRefreshSummary(tripCount: drafts.count,
                                             updatedTripCount: updatedTripCount,
                                             analyzedPhotoCount: analyzedPhotoCount)
+    }
+
+    /// 只用已有 SwiftData 缓存修复/补齐时间线，不读取相册、不运行 Vision、也不请求地名。
+    /// 页面进入时使用这个快速路径，避免用户为了查看旧记录而等待整库扫描。
+    static func rebuildFromCache(context: ModelContext,
+                                 sessions: [ActivitySession]) async -> TravelTimelineRefreshSummary {
+        let photoRecords = (try? context.fetch(FetchDescriptor<PhotoAnalysisRecord>())) ?? []
+        let input = TimelineGenerationInput(sessions: sessions, photos: photoRecords)
+        let drafts = await Task.detached(priority: .utility) {
+            TravelTimelineDraftBuilder.build(input)
+        }.value
+        let updatedTripCount = reconcile(drafts: drafts, in: context)
+        PersistenceService.save(context, operation: "修复旅行时间线缓存")
+        return TravelTimelineRefreshSummary(tripCount: drafts.count,
+                                            updatedTripCount: updatedTripCount,
+                                            analyzedPhotoCount: 0)
     }
 
     private static func inputSignature(sessions: [ActivitySession],
@@ -172,10 +188,9 @@ enum TravelTimelineGenerationService {
             updatedCount += 1
         }
 
-        for staleTrip in existingByKey.values {
-            context.delete(staleTrip)
-        }
-        return updatedCount + existingByKey.count
+        // 时间线是用户的历史记录。照片权限变化、分批分析或识别规则升级都可能让
+        // 一次刷新只生成部分草稿，因此绝不能据此删除本轮未出现的旧旅行。
+        return updatedCount
     }
 
     private static func reconcile(nodes drafts: [TravelTimelineNodeDraft],
@@ -219,7 +234,7 @@ enum TravelTimelineGenerationService {
         }
     }
 
-    private static let maximumResolutionsPerRefresh = 24
+    private static let maximumResolutionsPerRefresh = 6
     private static let geocodePauseNanos: UInt64 = 200_000_000
 
     private static func resolveMissingPlaceNames(in context: ModelContext) async {

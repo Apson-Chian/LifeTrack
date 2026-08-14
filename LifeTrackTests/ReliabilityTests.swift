@@ -506,6 +506,25 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertTrue(moments.first { $0.assetIdentifier == "time-only" }?.usesPhotoLocation == false)
     }
 
+    func testTimelineCacheRebuildNeverDeletesHistoricalTripsMissingFromCurrentDrafts() async throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let historical = TravelTimelineTrip(stableKey: "photo:historical",
+                                            title: "历史旅行",
+                                            startTime: Date(timeIntervalSince1970: 1_650_000_000),
+                                            endTime: Date(timeIntervalSince1970: 1_650_003_600),
+                                            totalDistance: 12_000,
+                                            sourceFingerprint: "legacy-source",
+                                            routePoints: [])
+        context.insert(historical)
+        try context.save()
+
+        _ = await TravelTimelineGenerationService.rebuildFromCache(context: context, sessions: [])
+
+        let trips = try context.fetch(FetchDescriptor<TravelTimelineTrip>())
+        XCTAssertEqual(trips.map(\.stableKey), ["photo:historical"])
+    }
+
     func testPhotoAIPrivacyFilterRemovesSensitiveData() {
         let record = PhotoAnalysisRecord(
             assetIdentifier: "secret-asset-id",

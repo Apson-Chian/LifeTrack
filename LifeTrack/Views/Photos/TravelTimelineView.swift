@@ -82,7 +82,8 @@ struct PhotoTravelTimelineView: View {
         }
         .task {
             if selectedTripID == nil { selectedTripID = trips.first?.id }
-            await refreshTimeline()
+            // 进入页面只读取并修复已有缓存；相册扫描与 Vision 分析留给右上角手动刷新。
+            await rebuildFromCache()
         }
         .onChange(of: selectedTripID) { _, _ in
             selectedNodeID = nil
@@ -228,6 +229,21 @@ struct PhotoTravelTimelineView: View {
             statusMessage = parts.joined(separator: "，") + "。"
         }
         isRefreshing = false
+    }
+
+    private func rebuildFromCache() async {
+        guard !isRefreshing else { return }
+        let summary = await TravelTimelineGenerationService.rebuildFromCache(context: modelContext,
+                                                                              sessions: sessions)
+        let descriptor = FetchDescriptor<TravelTimelineTrip>(sortBy: [SortDescriptor(\TravelTimelineTrip.startTime,
+                                                                                     order: .reverse)])
+        let refreshedTrips = (try? modelContext.fetch(descriptor)) ?? []
+        if selectedTripID == nil || !refreshedTrips.contains(where: { $0.id == selectedTripID }) {
+            selectedTripID = refreshedTrips.first?.id
+        }
+        if summary.updatedTripCount > 0 {
+            statusMessage = "已从现有 GPS 和照片缓存补回 \(summary.updatedTripCount) 次行程。"
+        }
     }
 
     private func tripDateText(_ trip: TravelTimelineTrip) -> String {

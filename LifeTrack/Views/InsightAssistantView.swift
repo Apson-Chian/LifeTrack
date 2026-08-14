@@ -31,11 +31,12 @@ struct InsightAssistantView: View {
         List {
             stewardSection
 
+            composerSection
+
             if !assistantCenter.conversation.isEmpty || assistantCenter.activeQuestion != nil {
                 conversationSection
             }
 
-            composerSection
             insightActions
 
             if let message = assistantCenter.statusMessage, !assistantCenter.isGenerating {
@@ -45,12 +46,17 @@ struct InsightAssistantView: View {
         }
         .navigationTitle(featureContext == .general ? "生活管家" : featureContext.title)
         .navigationBarTitleDisplayMode(featureContext == .general ? .large : .inline)
+        .scrollDismissesKeyboard(.interactively)
         .toolbar {
             if !assistantCenter.conversation.isEmpty {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("新对话") { assistantCenter.clearConversation() }
                         .disabled(assistantCenter.isGenerating)
                 }
+            }
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("收起键盘") { questionFocused = false }
             }
         }
         .alert("需要配置 AI", isPresented: $configurationNeeded) {
@@ -93,26 +99,34 @@ struct InsightAssistantView: View {
 
     private var conversationSection: some View {
         Section("对话") {
-            ForEach(Array(assistantCenter.conversation.enumerated()), id: \.offset) { _, turn in
-                ChatBubble(text: turn.question, isUser: true)
-                ChatBubble(text: turn.answer, isUser: false)
+            ForEach(Array(assistantCenter.conversation.enumerated()), id: \.offset) { index, turn in
+                ConversationTurnCard(index: index + 1, question: turn.question, answer: turn.answer)
             }
             if let activeQuestion = assistantCenter.activeQuestion {
-                ChatBubble(text: activeQuestion, isUser: true)
-                HStack(spacing: 10) {
-                    ProgressView()
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("正在结合你的记录思考…")
-                            .font(.subheadline.weight(.medium))
-                        Text("你可以离开此页继续使用其他功能")
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("正在回答")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    ChatBubble(text: activeQuestion, isUser: true)
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("正在结合你的记录思考…")
+                                .font(.subheadline.weight(.medium))
+                            Text("你可以离开此页继续使用其他功能")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("停止", role: .destructive) { assistantCenter.cancel() }
                             .font(.caption)
-                            .foregroundStyle(.secondary)
                     }
-                    Spacer()
-                    Button("停止", role: .destructive) { assistantCenter.cancel() }
-                        .font(.caption)
+                    .padding(.vertical, 6)
                 }
-                .padding(.vertical, 6)
+                .padding(12)
+                .background(Color(uiColor: .secondarySystemBackground),
+                            in: RoundedRectangle(cornerRadius: 16))
+                .listRowSeparator(.hidden)
             }
         }
     }
@@ -144,7 +158,15 @@ struct InsightAssistantView: View {
                 }
             }
         } header: {
-            Text("继续问")
+            HStack {
+                Text("新对话")
+                Spacer()
+                if questionFocused {
+                    Button("收起键盘") { questionFocused = false }
+                        .font(.caption)
+                        .textCase(nil)
+                }
+            }
         } footer: {
             Text("管家按需查阅整个 App 的文字与数值记录；照片只提供本机脱敏后的主题聚合。")
         }
@@ -153,14 +175,15 @@ struct InsightAssistantView: View {
     private var insightActions: some View {
         Section {
             ForEach(kinds, id: \.self) { kind in
-                Button { generate(kind) } label: {
+                NavigationLink {
+                    InsightKindDetailView(kind: kind)
+                } label: {
                     HStack {
                         Label(kind.title, systemImage: kind.symbol)
                         Spacer()
                         if assistantCenter.generatingKind == kind { ProgressView().controlSize(.small) }
                     }
                 }
-                .disabled(assistantCenter.isGenerating)
             }
         } header: {
             Text("让管家主动整理")
@@ -205,14 +228,30 @@ struct InsightAssistantView: View {
         }
     }
 
-    private func generate(_ kind: InsightKind) {
-        guard AISettings.isConfigured else { configurationNeeded = true; return }
-        _ = assistantCenter.generate(kind, modelContext: modelContext)
-    }
-
     private func delete(_ offsets: IndexSet) {
         for index in offsets { modelContext.delete(insights[index]) }
         PersistenceService.save(modelContext, operation: "删除洞察", failureRecovery: .rollback)
+    }
+}
+
+private struct ConversationTurnCard: View {
+    let index: Int
+    let question: String
+    let answer: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("第 \(index) 轮")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ChatBubble(text: question, isUser: true)
+            Divider()
+            ChatBubble(text: answer, isUser: false)
+        }
+        .padding(12)
+        .background(Color(uiColor: .secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 16))
+        .listRowSeparator(.hidden)
     }
 }
 
@@ -250,12 +289,98 @@ private struct InsightRow: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+            Text(insight.createdAt.formatted(date: .abbreviated, time: .shortened))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
             Text(insight.content)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
         }
-        .padding(.vertical, 4)
+        .padding(12)
+        .background(Color(uiColor: .secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 14))
+        .listRowSeparator(.hidden)
+    }
+}
+
+private struct InsightKindDetailView: View {
+    @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var assistantCenter: AssistantTaskCenter
+    @Query(sort: \LifeInsightRecord.createdAt, order: .reverse) private var allInsights: [LifeInsightRecord]
+
+    let kind: InsightKind
+
+    @State private var configurationNeeded = false
+
+    private var history: [LifeInsightRecord] {
+        allInsights.filter { $0.kind == kind }
+    }
+
+    var body: some View {
+        List {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label(kind.title, systemImage: kind.symbol)
+                        .font(.title3.weight(.semibold))
+                    Text(description)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+
+                Button(action: generate) {
+                    HStack {
+                        Label("生成新的\(kind.title)", systemImage: "sparkles")
+                        Spacer()
+                        if assistantCenter.generatingKind == kind { ProgressView().controlSize(.small) }
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(assistantCenter.isGenerating)
+            } footer: {
+                Text("开始后可以离开此页，管家会在后台继续整理。")
+            }
+
+            Section("历史生成记录") {
+                if history.isEmpty {
+                    Text("还没有生成记录。点击上方按钮创建第一份内容。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(history) { InsightRow(insight: $0) }
+                        .onDelete(perform: delete)
+                }
+            }
+        }
+        .navigationTitle(kind.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .alert("需要配置 AI", isPresented: $configurationNeeded) {
+            Button("好", role: .cancel) { }
+        } message: {
+            Text("请先在“设置 → AI 管家”中启用并配置 Agnes 或 DeepSeek。")
+        }
+    }
+
+    private var description: String {
+        switch kind {
+        case .dailyReflection: "整理今天的运动、停留和安全的照片主题，形成一份今日回顾。"
+        case .weeklyReview: "综合一周的活动、学习与生活节奏，给出下周可执行建议。"
+        case .learningLifeBalance: "结合课程、学习地点停留、运动和恢复情况分析学娱平衡。"
+        case .travelStory: "先排除家、学校和日常活动，再根据旅行记录整理手记。"
+        case .custom: "结合 LifeTrack 中可用的文字和数值记录生成内容。"
+        }
+    }
+
+    private func generate() {
+        guard AISettings.isConfigured else { configurationNeeded = true; return }
+        _ = assistantCenter.generate(kind, modelContext: modelContext)
+    }
+
+    private func delete(_ offsets: IndexSet) {
+        for index in offsets { modelContext.delete(history[index]) }
+        PersistenceService.save(modelContext, operation: "删除洞察", failureRecovery: .rollback)
     }
 }
