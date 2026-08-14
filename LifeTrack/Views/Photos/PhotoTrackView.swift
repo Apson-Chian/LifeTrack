@@ -45,6 +45,9 @@ struct PhotoTrackView: View {
         .onChange(of: timelineScope) { _, scope in
             Task { await applyTimelineScope(scope) }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .lifeTrackPhotoLibraryDidChange)) { _ in
+            Task { await loadPhotoLocations() }
+        }
     }
 
     private var photoFeatures: some View {
@@ -208,8 +211,9 @@ struct PhotoTrackView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("常出现的位置").font(.subheadline.weight(.semibold))
                     ForEach(Array(photoMemory.hotspots.prefix(4).enumerated()), id: \.element.id) { index, hotspot in
-                        Button {
-                            cameraRequest = MapCameraRequest(target: .coordinate(lat: hotspot.center.latitude, lon: hotspot.center.longitude))
+                        NavigationLink {
+                            PhotoLocationGalleryView(title: "常出现的位置 \(index + 1)",
+                                                     points: hotspot.points)
                         } label: {
                             HStack(spacing: 10) {
                                 Text("\(index + 1)")
@@ -481,10 +485,11 @@ private struct MonthKey: Hashable {
 
 private struct PhotoHotspot: Identifiable {
     let id = UUID()
-    let center: CLLocationCoordinate2D
-    let count: Int
+    let points: [PhotoLocationPoint]
     let firstDate: Date
     let lastDate: Date
+
+    var count: Int { points.count }
 
     var dateRangeText: String {
         if Calendar.current.isDate(firstDate, inSameDayAs: lastDate) {
@@ -524,8 +529,7 @@ private struct PhotoHotspot: Identifiable {
                 return $0.count > $1.count
             }
             .map {
-                PhotoHotspot(center: $0.center,
-                             count: $0.count,
+                PhotoHotspot(points: $0.points,
                              firstDate: $0.firstDate,
                              lastDate: $0.lastDate)
             }
@@ -559,17 +563,19 @@ private struct PhotoHotspotCell: Hashable {
 private struct PhotoHotspotCluster {
     private var latitudeSum: Double
     private var longitudeSum: Double
-    private(set) var count: Int
+    private(set) var points: [PhotoLocationPoint]
     private(set) var firstDate: Date
     private(set) var lastDate: Date
 
     init(point: PhotoLocationPoint) {
         latitudeSum = point.coordinate.latitude
         longitudeSum = point.coordinate.longitude
-        count = 1
+        points = [point]
         firstDate = point.date
         lastDate = point.date
     }
+
+    var count: Int { points.count }
 
     var center: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitudeSum / Double(count),
@@ -579,7 +585,7 @@ private struct PhotoHotspotCluster {
     mutating func add(_ point: PhotoLocationPoint) {
         latitudeSum += point.coordinate.latitude
         longitudeSum += point.coordinate.longitude
-        count += 1
+        points.append(point)
         firstDate = min(firstDate, point.date)
         lastDate = max(lastDate, point.date)
     }

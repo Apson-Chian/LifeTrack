@@ -1,4 +1,5 @@
 import Foundation
+import CoreLocation
 import SwiftData
 import XCTest
 @testable import LifeTrack
@@ -223,6 +224,80 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertEqual(session.startTime, start.addingTimeInterval(60))
         XCTAssertEqual(session.duration, 180, accuracy: 0.001)
         XCTAssertGreaterThan(session.distance, 250)
+    }
+
+    func testPhotoDetailSnapshotPreservesAnalysisMetadata() {
+        let creationDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let sessionID = UUID()
+        let record = PhotoAnalysisRecord(assetIdentifier: "photo-detail-test",
+                                         creationDate: creationDate,
+                                         latitude: 31.21,
+                                         longitude: 121.51,
+                                         originalLatitude: 31.20,
+                                         originalLongitude: 121.50,
+                                         categories: [.landscape, .night],
+                                         topLabels: ["sky|0.92", "city|0.80"],
+                                         confidence: 0.92,
+                                         faceCount: 2,
+                                         state: .completed,
+                                         linkedSessionID: sessionID)
+
+        let item = PhotoDetailItem(record: record)
+
+        XCTAssertEqual(item.assetIdentifier, "photo-detail-test")
+        XCTAssertEqual(item.creationDate, creationDate)
+        XCTAssertEqual(item.coordinate?.latitude, 31.20)
+        XCTAssertEqual(item.coordinate?.longitude, 121.50)
+        XCTAssertEqual(item.categories, [.landscape, .night])
+        XCTAssertEqual(item.labels, ["sky", "city"])
+        XCTAssertEqual(item.confidence, 0.92)
+        XCTAssertEqual(item.faceCount, 2)
+        XCTAssertEqual(item.linkedSessionID, sessionID)
+    }
+
+    func testPhotoCacheCleanupRemovesAnalysisAndTimelineReference() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        context.insert(PhotoAnalysisRecord(assetIdentifier: "delete-me",
+                                           creationDate: date,
+                                           categories: [.food],
+                                           topLabels: ["food|0.90"],
+                                           confidence: 0.90,
+                                           faceCount: 0,
+                                           state: .completed))
+        let trip = TravelTimelineTrip(stableKey: "photo-cleanup-trip",
+                                      title: "Test",
+                                      startTime: date,
+                                      endTime: date.addingTimeInterval(60),
+                                      totalDistance: 0,
+                                      sourceFingerprint: "test",
+                                      routePoints: [])
+        context.insert(trip)
+        context.insert(TravelTimelineNode(stableKey: "photo-cleanup-node",
+                                          kind: .stay,
+                                          startTime: date,
+                                          endTime: date.addingTimeInterval(60),
+                                          coordinate: .init(latitude: 31.2, longitude: 121.5),
+                                          endCoordinate: nil,
+                                          distance: 0,
+                                          activityType: .unknown,
+                                          photoIdentifiers: ["keep-me", "delete-me"],
+                                          categories: [.food],
+                                          trip: trip))
+        try context.save()
+
+        XCTAssertTrue(PhotoLibraryMutationService.cleanCache(assetIdentifier: "delete-me",
+                                                              container: container))
+
+        let verificationContext = ModelContext(container)
+        let deletedID = "delete-me"
+        let records = try verificationContext.fetch(FetchDescriptor<PhotoAnalysisRecord>(
+            predicate: #Predicate { $0.assetIdentifier == deletedID }
+        ))
+        XCTAssertTrue(records.isEmpty)
+        let nodes = try verificationContext.fetch(FetchDescriptor<TravelTimelineNode>())
+        XCTAssertEqual(nodes.first?.photoIdentifiers, ["keep-me"])
     }
 
     private func makeContainer() throws -> ModelContainer {

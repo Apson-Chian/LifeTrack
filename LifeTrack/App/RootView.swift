@@ -6,6 +6,7 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var locationService = LocationService.shared
     @State private var didConfigureServices = false
+    @State private var showOnboarding = !OnboardingState.hasSeenOnboarding
 
     var body: some View {
         TabView {
@@ -30,6 +31,9 @@ struct RootView: View {
             if phase == .inactive || phase == .background {
                 locationService.flushPendingTrackDataIfNeeded(force: true)
             }
+        }
+        .fullScreenCover(isPresented: $showOnboarding) {
+            OnboardingView()
         }
     }
 }

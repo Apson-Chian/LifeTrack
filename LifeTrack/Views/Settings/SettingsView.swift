@@ -10,9 +10,13 @@ struct SettingsView: View {
     @ObservedObject var locationService: LocationService
     @State private var preference: RecordingPreference = .smart
     @State private var sharedBackup: SharedFile?
+    @State private var sharedDiagnostics: SharedFile?
+    @State private var sharedDataFiles: [URL]?
     @State private var isSelectingBackup = false
     @State private var backupMessage: String?
     @State private var showBackupPrivacyWarning = false
+    @State private var showOnboarding = false
+    @State private var allowsCellularDownload = NetworkStatusService.allowsCellularPhotoDownload
 
     var body: some View {
         NavigationStack {
@@ -70,13 +74,45 @@ struct SettingsView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
+                    Button {
+                        exportCSV()
+                    } label: {
+                        Label("导出 CSV 数据", systemImage: "tablecells")
+                    }
+                    Button {
+                        exportDiagnostics()
+                    } label: {
+                        Label("导出诊断报告", systemImage: "stethoscope")
+                    }
                     Text("当前备份文件为本地明文备份，包含完整位置、活动、地点、Journey、旅行归档和照片分析记录。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Section("网络与流量") {
+                    Toggle("蜂窝网络下载照片缩略图", isOn: $allowsCellularDownload)
+                        .onChange(of: allowsCellularDownload) { _, newValue in
+                            NetworkStatusService.setAllowsCellularPhotoDownload(newValue)
+                        }
+                    Text("关闭后，蜂窝网络下不会从 iCloud 下载照片缩略图，仅在 Wi-Fi 下下载，避免消耗流量。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 Section("照片隐私") {
                     Text("照片内容仅在设备本地进行分析；如果照片仅存储在 iCloud，系统可能从 iCloud 下载缩略图用于本地分析。LifeTrack 不会把原图上传到第三方服务器。")
                         .font(.footnote)
+                }
+                Section("关于与帮助") {
+                    LabeledContent("版本", value: "\(version) (\(build))")
+                    Button {
+                        showOnboarding = true
+                    } label: {
+                        Label("重新查看使用引导", systemImage: "book")
+                    }
+                    Button {
+                        exportDiagnostics()
+                    } label: {
+                        Label("反馈问题（导出诊断报告）", systemImage: "envelope")
+                    }
                 }
                 if let lastError = locationService.lastError {
                     Section("定位问题") { Text(lastError).foregroundStyle(.red) }
@@ -86,6 +122,15 @@ struct SettingsView: View {
             .onAppear { preference = locationService.recordingPreference }
             .sheet(item: $sharedBackup) { file in
                 ShareSheet(items: [file.url])
+            }
+            .sheet(item: $sharedDiagnostics) { file in
+                ShareSheet(items: [file.url])
+            }
+            .sheet(isPresented: dataFilesPresented) {
+                ShareSheet(items: sharedDataFiles ?? [])
+            }
+            .fullScreenCover(isPresented: $showOnboarding) {
+                OnboardingView()
             }
             .fileImporter(isPresented: $isSelectingBackup,
                           allowedContentTypes: [.json]) { result in
@@ -132,6 +177,14 @@ struct SettingsView: View {
         }
     }
 
+    private var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
+    }
+
+    private var build: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
+    }
+
     private func openSystemSettings() {
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
         openURL(url)
@@ -145,8 +198,30 @@ struct SettingsView: View {
         }
     }
 
+    private func exportCSV() {
+        do {
+            sharedDataFiles = try CSVExportService.exportAll(from: modelContext)
+        } catch {
+            backupMessage = "导出 CSV 失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func exportDiagnostics() {
+        do {
+            let health = try DataHealthService.inspect(context: modelContext)
+            sharedDiagnostics = SharedFile(url: try DiagnosticsService.buildDiagnosticsReport(health: health))
+        } catch {
+            backupMessage = "导出诊断报告失败：\(error.localizedDescription)"
+        }
+    }
+
     private var backupMessagePresented: Binding<Bool> {
         Binding(get: { backupMessage != nil },
                 set: { if !$0 { backupMessage = nil } })
+    }
+
+    private var dataFilesPresented: Binding<Bool> {
+        Binding(get: { sharedDataFiles != nil },
+                set: { if !$0 { sharedDataFiles = nil } })
     }
 }

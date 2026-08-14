@@ -414,7 +414,9 @@ private struct TrackDisplaySegment: Identifiable {
 
             let effectiveInterval = max(interval, 1)
             let averageSpeed = distance / effectiveInterval
-            if current.source == .photo {
+            // 采样/照片点已在生成阶段完成清洗，直接连线以保证轨迹连续完整，
+            // 只有原始定位点才需要做最大距离/速度的异常截断。
+            if current.source != .recorded {
                 segments.append(TrackDisplaySegment(id: nextID,
                                                     activityType: current.activityType,
                                                     source: current.source,
@@ -456,6 +458,7 @@ private struct TrackDisplaySegment: Identifiable {
         case .running: 8
         case .cycling: 12
         case .automotive: 20
+        case .transit: 20
         case .unknown: 8
         }
     }
@@ -467,6 +470,7 @@ private struct TrackDisplaySegment: Identifiable {
         case .running: 2
         case .cycling: 4
         case .automotive: 6
+        case .transit: 6
         case .unknown: 4
         }
     }
@@ -476,6 +480,7 @@ private struct TrackDisplaySegment: Identifiable {
         case .walking, .running: 450
         case .cycling: 900
         case .automotive: 1_800
+        case .transit: 1_800
         case .stationary: 120
         case .unknown: 900
         }
@@ -487,6 +492,7 @@ private struct TrackDisplaySegment: Identifiable {
         case .running: 6.5
         case .cycling: 14
         case .automotive: 55
+        case .transit: 40
         case .stationary: 1.2
         case .unknown: 25
         }
@@ -743,6 +749,7 @@ extension ActivityType {
         case .running: Color(red: 1.0, green: 0.72, blue: 0.28)
         case .cycling: Color(red: 0.38, green: 0.78, blue: 1.0)
         case .automotive: Color(red: 0.78, green: 0.58, blue: 1.0)
+        case .transit: Color(red: 0.36, green: 0.90, blue: 0.86)
         case .stationary: .gray
         case .unknown: Color(red: 0.68, green: 0.82, blue: 1.0)
         }
@@ -752,7 +759,7 @@ extension ActivityType {
         switch self {
         case .walking, .running, .stationary:
             return .walking
-        case .cycling, .automotive, .unknown:
+        case .cycling, .automotive, .transit, .unknown:
             return .automobile
         }
     }
@@ -775,5 +782,21 @@ private extension MKPolyline {
 private extension Double {
     var roundedKey: String {
         String(format: "%.5f", self)
+    }
+}
+
+extension Array where Element == TrackMapPoint {
+    /// 地图渲染前抽稀，避免超大轨迹卡顿；均匀采样并保留首尾点。
+    /// 4000 个点在任意缩放级别下都足够平滑，肉眼无差别。
+    func downsampledForMap(maxCount: Int = 4000) -> [TrackMapPoint] {
+        guard count > maxCount else { return self }
+        let step = Double(count - 1) / Double(maxCount - 1)
+        var result: [TrackMapPoint] = []
+        result.reserveCapacity(maxCount)
+        for index in 0..<maxCount {
+            let sourceIndex = Swift.min(Int((Double(index) * step).rounded()), count - 1)
+            result.append(self[sourceIndex])
+        }
+        return result
     }
 }

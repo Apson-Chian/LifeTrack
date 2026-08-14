@@ -15,9 +15,8 @@ struct TravelArchiveSuggestion: Identifiable {
 }
 
 enum TravelArchiveDetectionService {
+    /// 只有当某天最远点离“家”超过该距离时，才可能算作旅行，避免把日常通勤/同城活动当旅行。
     private static let awayFromHomeThreshold: CLLocationDistance = 50_000
-    private static let daySpanThreshold: CLLocationDistance = 80_000
-    private static let movementThreshold: CLLocationDistance = 100_000
 
     static func suggestions(photos: [PhotoAnalysisRecord],
                             sessions: [ActivitySession],
@@ -28,6 +27,8 @@ enum TravelArchiveDetectionService {
                             calendar: Calendar = .current) -> [TravelArchiveSuggestion] {
         let eligibleSessions = sessions.filter { !$0.isActive }
         let anchor = homeAnchor(places: places, stays: stays)
+        // 没有“家”的锚点就无法区分“日常出行”与“异地旅行”，保守起见不推荐。
+        guard anchor != nil else { return [] }
         let days = candidateDays(photos: photos,
                                  sessions: eligibleSessions,
                                  stays: stays,
@@ -39,11 +40,8 @@ enum TravelArchiveDetectionService {
                                     stays: stays,
                                     anchor: anchor,
                                     calendar: calendar)
-            let isClearlyAway = evidence.maximumDistanceFromHome >= awayFromHomeThreshold &&
-                (evidence.photoCount >= 3 || evidence.totalDistance >= 10_000)
-            return isClearlyAway ||
-                evidence.geographicSpan >= daySpanThreshold ||
-                evidence.totalDistance >= movementThreshold
+            return evidence.maximumDistanceFromHome >= awayFromHomeThreshold &&
+                (evidence.photoCount >= 2 || evidence.totalDistance >= 5_000)
         }
         let groups = consecutiveGroups(travelDays, calendar: calendar)
         let confirmedKeys = Set(confirmed.map(\.sourceFingerprint))

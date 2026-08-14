@@ -11,8 +11,28 @@ struct TravelTimelineRefreshSummary {
 
 @MainActor
 enum TravelTimelineGenerationService {
+    /// 每次时间线刷新最多新分析的照片数，避免首次打开时串行分析整库照片而卡住。
+    private static let maximumPhotosPerTimelineRefresh = 40
+    private static let timelineSignatureKey = "travelTimelineLastSignature"
+
+    private static var lastSignature: String? {
+        get { UserDefaults.standard.string(forKey: timelineSignatureKey) }
+        set { UserDefaults.standard.set(newValue, forKey: timelineSignatureKey) }
+    }
+
     static func refresh(context: ModelContext,
                         sessions: [ActivitySession]) async -> TravelTimelineRefreshSummary {
+        let signature = inputSignature(sessions: sessions, context: context)
+        let existingTripCount = (try? context.fetchCount(FetchDescriptor<TravelTimelineTrip>())) ?? 0
+
+        // 数据未变化时跳过照片分析与时间轴重建，只补解析缺失地名（无缺失时几乎零开销）。
+        if existingTripCount > 0, lastSignature == signature {
+            await resolveMissingPlaceNames(in: context)
+            return TravelTimelineRefreshSummary(tripCount: existingTripCount,
+                                                updatedTripCount: 0,
+                                                analyzedPhotoCount: 0)
+        }
+
         let analyzedPhotoCount = await updatePhotoCache(context: context, sessions: sessions)
         let photoRecords = (try? context.fetch(FetchDescriptor<PhotoAnalysisRecord>())) ?? []
         let input = TimelineGenerationInput(sessions: sessions, photos: photoRecords)
@@ -24,9 +44,32 @@ enum TravelTimelineGenerationService {
         PersistenceService.save(context, operation: "保存旅行时间线")
         await resolveMissingPlaceNames(in: context)
 
+        lastSignature = signature
         return TravelTimelineRefreshSummary(tripCount: drafts.count,
                                             updatedTripCount: updatedTripCount,
                                             analyzedPhotoCount: analyzedPhotoCount)
+    }
+
+    private static func inputSignature(sessions: [ActivitySession],
+                                       context: ModelContext) -> String {
+        var hash = StableFNVHash()
+        hash.add("timeline-input-v1")
+        hash.add(sessions.count)
+        for session in sessions {
+            hash.add(session.id.uuidString)
+            hash.add(session.startTime.timeIntervalSince1970)
+            hash.add(session.endTime?.timeIntervalSince1970 ?? 0)
+            hash.add(session.distance)
+        }
+        let photoCount = (try? context.fetchCount(FetchDescriptor<PhotoAnalysisRecord>())) ?? 0
+        hash.add(photoCount)
+        var latestDescriptor = FetchDescriptor<PhotoAnalysisRecord>(
+            sortBy: [SortDescriptor(\PhotoAnalysisRecord.analyzedAt, order: .reverse)])
+        latestDescriptor.fetchLimit = 1
+        if let newest = try? context.fetch(latestDescriptor).first {
+            hash.add(newest.analyzedAt.timeIntervalSince1970)
+        }
+        return hash.hex
     }
 
     private static func updatePhotoCache(context: ModelContext,
@@ -34,8 +77,10 @@ enum TravelTimelineGenerationService {
         let status = await photoAuthorizationStatus()
         guard status == .authorized || status == .limited else { return 0 }
 
+        PhotoLibraryChangeMonitor.shared.ensureRegistered()
+        let generation = PhotoLibraryChangeMonitor.shared.generation
         let descriptors = await Task.detached(priority: .utility) {
-            PhotoLibraryScanner.descriptors()
+            PhotoLibraryScanCache.descriptors(currentGeneration: generation)
         }.value
         let records = (try? context.fetch(FetchDescriptor<PhotoAnalysisRecord>())) ?? []
         var recordByIdentifier = Dictionary(uniqueKeysWithValues: records.map { ($0.assetIdentifier, $0) })
@@ -58,6 +103,7 @@ enum TravelTimelineGenerationService {
                 continue
             }
             guard !ProcessInfo.processInfo.isLowPowerModeEnabled else { continue }
+            guard analyzedCount < maximumPhotosPerTimelineRefresh else { break }
 
             let result = await PhotoVisionAnalysisService.analyze(descriptor)
             let record = PhotoAnalysisRecord(assetIdentifier: descriptor.id,
@@ -173,6 +219,9 @@ enum TravelTimelineGenerationService {
         }
     }
 
+    private static let maximumResolutionsPerRefresh = 24
+    private static let geocodePauseNanos: UInt64 = 200_000_000
+
     private static func resolveMissingPlaceNames(in context: ModelContext) async {
         let nodes = (try? context.fetch(FetchDescriptor<TravelTimelineNode>())) ?? []
         let geocoder = GeocodingService()
@@ -181,6 +230,7 @@ enum TravelTimelineGenerationService {
 
         for node in nodes.sorted(by: { $0.startTime > $1.startTime }) {
             guard !Task.isCancelled else { break }
+            guard resolvedCount < maximumResolutionsPerRefresh else { break }
             if node.placeName == nil {
                 let key = coordinateKey(node.coordinate)
                 if let cached = cache[key] {
@@ -188,6 +238,7 @@ enum TravelTimelineGenerationService {
                 } else if let name = await geocoder.reverseGeocode(node.coordinate), !name.isEmpty {
                     node.placeName = name
                     cache[key] = name
+                    try? await Task.sleep(nanoseconds: geocodePauseNanos)
                 }
                 resolvedCount += 1
             }
@@ -198,6 +249,7 @@ enum TravelTimelineGenerationService {
                 } else if let name = await geocoder.reverseGeocode(end), !name.isEmpty {
                     node.endPlaceName = name
                     cache[key] = name
+                    try? await Task.sleep(nanoseconds: geocodePauseNanos)
                 }
                 resolvedCount += 1
             }
@@ -330,11 +382,12 @@ private enum TravelTimelineDraftBuilder {
 
     static func build(_ input: TimelineGenerationInput) -> [TravelTimelineTripDraft] {
         let sessionGroups = groupSessions(input.sessions.sorted { $0.startTime < $1.startTime })
+        let metas = sessionGroups.map(GroupMeta.init)
         var photosByGroup = Array(repeating: [TimelinePhotoSnapshot](), count: sessionGroups.count)
         var unassignedPhotos: [TimelinePhotoSnapshot] = []
 
         for photo in input.photos {
-            if let index = bestSessionGroup(for: photo, groups: sessionGroups) {
+            if let index = bestSessionGroup(for: photo, metas: metas) {
                 photosByGroup[index].append(photo)
             } else {
                 unassignedPhotos.append(photo)
@@ -370,28 +423,41 @@ private enum TravelTimelineDraftBuilder {
         return groups
     }
 
+    private struct GroupMeta {
+        let start: Date
+        let end: Date
+        let sampledPoints: [TimelineTrackPointSnapshot]
+
+        init(_ group: [TimelineSessionSnapshot]) {
+            start = group.map(\.startTime).min() ?? .distantPast
+            end = group.map(\.endTime).max() ?? .distantFuture
+            let all = group.flatMap(\.points).sorted { $0.timestamp < $1.timestamp }
+            let stride = max(all.count / 100, 1)
+            sampledPoints = all.enumerated().compactMap { index, point in
+                index % stride == 0 ? point : nil
+            }
+        }
+    }
+
     private static func bestSessionGroup(for photo: TimelinePhotoSnapshot,
-                                         groups: [[TimelineSessionSnapshot]]) -> Int? {
+                                         metas: [GroupMeta]) -> Int? {
         var best: (index: Int, score: Double)?
-        for (index, group) in groups.enumerated() {
-            guard let start = group.map(\.startTime).min(), let end = group.map(\.endTime).max() else { continue }
+        for (index, meta) in metas.enumerated() {
             let timeGap: TimeInterval
-            if photo.date >= start && photo.date <= end {
+            if photo.date >= meta.start && photo.date <= meta.end {
                 timeGap = 0
             } else {
-                timeGap = min(abs(photo.date.timeIntervalSince(start)), abs(photo.date.timeIntervalSince(end)))
+                timeGap = min(abs(photo.date.timeIntervalSince(meta.start)),
+                              abs(photo.date.timeIntervalSince(meta.end)))
             }
-            let sameDay = Calendar.current.isDate(photo.date, inSameDayAs: start) ||
-                Calendar.current.isDate(photo.date, inSameDayAs: end)
+            let sameDay = Calendar.current.isDate(photo.date, inSameDayAs: meta.start) ||
+                Calendar.current.isDate(photo.date, inSameDayAs: meta.end)
             guard timeGap <= 2 * 60 * 60 || sameDay else { continue }
 
             var distance = 0.0
-            if let coordinate = photo.coordinate {
-                let points = group.flatMap(\.points)
-                if !points.isEmpty {
-                    distance = points.map { coordinate.distance(to: $0.coordinate) }.min() ?? .greatestFiniteMagnitude
-                    guard distance <= 5_000 || timeGap <= 60 * 60 else { continue }
-                }
+            if let coordinate = photo.coordinate, !meta.sampledPoints.isEmpty {
+                distance = meta.sampledPoints.map { coordinate.distance(to: $0.coordinate) }.min() ?? .greatestFiniteMagnitude
+                guard distance <= 5_000 || timeGap <= 60 * 60 else { continue }
             }
             let score = timeGap / 3_600 + distance / 2_000
             if best == nil || score < best!.score { best = (index, score) }
@@ -467,19 +533,32 @@ private enum TravelTimelineDraftBuilder {
     }
 
     private static func spatialPhotoGroups(_ photos: [TimelinePhotoSnapshot]) -> [[TimelinePhotoSnapshot]] {
-        var groups: [[TimelinePhotoSnapshot]] = []
+        struct Accumulator {
+            var photos: [TimelinePhotoSnapshot] = []
+            var latSum: Double = 0
+            var lonSum: Double = 0
+            var center: CLLocationCoordinate2D? {
+                photos.isEmpty ? nil : CLLocationCoordinate2D(latitude: latSum / Double(photos.count),
+                                                              longitude: lonSum / Double(photos.count))
+            }
+        }
+        var groups: [Accumulator] = []
         for photo in photos.sorted(by: { $0.date < $1.date }) {
             guard let coordinate = photo.coordinate else { continue }
             if let index = groups.firstIndex(where: { group in
-                guard let center = center(of: group.compactMap(\.coordinate)) else { return false }
+                guard let center = group.center else { return false }
                 return center.distance(to: coordinate) <= 15_000
             }) {
-                groups[index].append(photo)
+                groups[index].photos.append(photo)
+                groups[index].latSum += coordinate.latitude
+                groups[index].lonSum += coordinate.longitude
             } else {
-                groups.append([photo])
+                groups.append(Accumulator(photos: [photo],
+                                          latSum: coordinate.latitude,
+                                          lonSum: coordinate.longitude))
             }
         }
-        return groups
+        return groups.map(\.photos)
     }
 
     private static func detectStays(in points: [TimelineTrackPointSnapshot]) -> [StayDraft] {
@@ -745,9 +824,11 @@ private enum TravelTimelineDraftBuilder {
                                                 activityTypeRawValue: ActivityType.unknown.rawValue)
             }
         }
-        let stride = max(points.count / 1_200, 1)
-        return points.enumerated().compactMap { index, point in
-            guard index % stride == 0 || index == points.count - 1 else { return nil }
+        // 只保留移动点，去掉停留簇，让路线更干净；抽稀到约 2400 点以保证连续完整。
+        let movement = points.filter { $0.activityType != .stationary }
+        let stride = max(movement.count / 2_400, 1)
+        return movement.enumerated().compactMap { index, point in
+            guard index % stride == 0 || index == movement.count - 1 else { return nil }
             return TravelTimelineRoutePoint(latitude: point.coordinate.latitude,
                                             longitude: point.coordinate.longitude,
                                             timestamp: point.timestamp,

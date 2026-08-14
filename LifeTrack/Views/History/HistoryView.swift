@@ -173,6 +173,7 @@ private enum ActivityFilter: String, CaseIterable, Identifiable {
     case running
     case cycling
     case automotive
+    case transit
     case stationary
     case unknown
 
@@ -185,6 +186,7 @@ private enum ActivityFilter: String, CaseIterable, Identifiable {
         case .running: "跑步"
         case .cycling: "骑行"
         case .automotive: "驾车"
+        case .transit: "公交地铁"
         case .stationary: "静止"
         case .unknown: "未知"
         }
@@ -197,12 +199,13 @@ private enum ActivityFilter: String, CaseIterable, Identifiable {
         case .running: .running
         case .cycling: .cycling
         case .automotive: .automotive
+        case .transit: .transit
         case .stationary: .stationary
         case .unknown: .unknown
         }
     }
 
-    static let activityOrder: [ActivityType] = [.walking, .running, .cycling, .automotive, .stationary, .unknown]
+    static let activityOrder: [ActivityType] = [.walking, .running, .cycling, .automotive, .transit, .stationary, .unknown]
 }
 
 private extension Date {
@@ -291,6 +294,7 @@ private struct JourneyDetailView: View {
         orderedSessions.flatMap(\.trackPoints)
             .sorted { $0.timestamp < $1.timestamp }
             .map(TrackMapPoint.init)
+            .downsampledForMap()
     }
 
     var body: some View {
@@ -360,7 +364,7 @@ struct SessionDetailView: View {
     @State private var exportError: String?
 
     private var mapPoints: [TrackMapPoint] {
-        session.trackPoints.sorted { $0.timestamp < $1.timestamp }.map(TrackMapPoint.init)
+        session.trackPoints.sorted { $0.timestamp < $1.timestamp }.map(TrackMapPoint.init).downsampledForMap()
     }
 
     private var anomalyCount: Int {

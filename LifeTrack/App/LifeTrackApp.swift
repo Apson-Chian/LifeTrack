@@ -5,6 +5,10 @@ import SwiftData
 struct LifeTrackApp: App {
     @State private var storeState = DataStoreManager.openActiveStore()
 
+    init() {
+        DiagnosticsService.installCrashHandlers()
+    }
+
     var body: some Scene {
         WindowGroup {
             storeContent

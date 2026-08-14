@@ -38,6 +38,30 @@ struct PlacesView: View {
                         } label: {
                             campusEntryRow
                         }
+
+                        NavigationLink {
+                            TimetableView()
+                        } label: {
+                            campusFeatureRow(symbol: "calendar", tint: .blue,
+                                             title: "课表",
+                                             subtitle: "管理每周课程安排")
+                        }
+
+                        NavigationLink {
+                            StudyStatsView()
+                        } label: {
+                            campusFeatureRow(symbol: "book.closed.fill", tint: .teal,
+                                             title: "学习统计",
+                                             subtitle: "汇总图书馆、自习室等学习停留时长")
+                        }
+
+                        NavigationLink {
+                            CampusHeatmapView()
+                        } label: {
+                            campusFeatureRow(symbol: "flame.fill", tint: .orange,
+                                             title: "校园热力图",
+                                             subtitle: "查看校园活动热点分布")
+                        }
                     }
                 }
 
@@ -111,6 +135,28 @@ struct PlacesView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            }
+        }
+        .padding(.vertical, 3)
+    }
+
+    private func campusFeatureRow(symbol: String,
+                                  tint: Color,
+                                  title: String,
+                                  subtitle: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(width: 46, height: 46)
+                .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, 3)

@@ -173,6 +173,7 @@ final class LocationService: NSObject, ObservableObject {
         session.isActive = false
         finalizePendingStay(at: end)
         applyTrajectoryAnalysis(to: session)
+        TransitDetectionService.relabelIfTransit(session)
         rebuildStayRecords(for: session)
         hasPendingPersistenceChanges = true
 
@@ -641,6 +642,7 @@ final class LocationService: NSObject, ObservableObject {
         lastError = message
         if critical { lastCriticalError = message }
         logger.error("\(message, privacy: .public)")
+        DiagnosticsService.logEvent(message, category: critical ? "critical" : "location")
     }
 }
 

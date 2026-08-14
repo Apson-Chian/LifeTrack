@@ -22,6 +22,7 @@ enum PersistenceService {
         } catch {
             let message = "\(operation)失败：\(error.localizedDescription)"
             logger.error("\(operation, privacy: .public) failed: \(String(reflecting: error), privacy: .public)")
+            DiagnosticsService.logEvent(message, category: "persistence")
             if failureRecovery == .rollback {
                 context.rollback()
             }

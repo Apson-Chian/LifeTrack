@@ -240,7 +240,7 @@ struct TodayView: View {
     private var activityBreakdown: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("活动分布").font(.headline)
-            ForEach([ActivityType.walking, .running, .cycling, .automotive]) { type in
+            ForEach([ActivityType.walking, .running, .cycling, .automotive, .transit]) { type in
                 let value = distance(for: type)
                 HStack {
                     Image(systemName: type.symbolName).frame(width: 24)
@@ -586,7 +586,7 @@ private struct MapControlsPanel<Content: View>: View {
 }
 
 private struct TrackTypeLegend: View {
-    private let types: [ActivityType] = [.walking, .running, .cycling, .automotive]
+    private let types: [ActivityType] = [.walking, .running, .cycling, .automotive, .transit]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {

@@ -171,10 +171,14 @@ private struct TravelArchiveEditorTarget: Identifiable {
 private struct TravelArchiveEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Query(sort: \ActivitySession.startTime, order: .forward) private var allSessions: [ActivitySession]
+    @Query(sort: \CustomPlace.shortName) private var allPlaces: [CustomPlace]
     let target: TravelArchiveEditorTarget
     @State private var title: String
     @State private var startTime: Date
     @State private var endTime: Date
+    @State private var mainPlaces: [String]
+    @State private var newPlaceName = ""
     @State private var saveError: String?
 
     init(target: TravelArchiveEditorTarget) {
@@ -182,23 +186,56 @@ private struct TravelArchiveEditorView: View {
         _title = State(initialValue: target.title)
         _startTime = State(initialValue: target.startTime)
         _endTime = State(initialValue: target.endTime)
+        _mainPlaces = State(initialValue: target.mainPlaces)
+    }
+
+    private var mapPoints: [TrackMapPoint] {
+        allSessions.filter { session in
+            let end = session.endTime ?? session.startTime.addingTimeInterval(session.duration)
+            return end >= startTime && session.startTime <= endTime
+        }
+        .flatMap(\.trackPoints)
+        .sorted { $0.timestamp < $1.timestamp }
+        .map(TrackMapPoint.init)
+        .downsampledForMap()
     }
 
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    TrackMapView(points: mapPoints,
+                                 places: allPlaces,
+                                 currentLocation: nil,
+                                 style: .vivid) { _ in }
+                        .frame(height: 240)
+                        .listRowInsets(EdgeInsets())
+                } header: {
+                    Text("旅行轨迹")
+                }
+
                 Section("旅行信息") {
                     TextField("旅行名称", text: $title)
                     DatePicker("开始日期", selection: $startTime, displayedComponents: .date)
                     DatePicker("结束日期", selection: $endTime, in: startTime..., displayedComponents: .date)
                 }
+
+                Section("地点") {
+                    ForEach(mainPlaces, id: \.self) { place in
+                        Label(place, systemImage: "mappin")
+                    }
+                    .onDelete(perform: deletePlace)
+                    HStack {
+                        TextField("添加地点", text: $newPlaceName)
+                        Button("添加") { addPlace() }
+                            .disabled(newPlaceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+
                 Section("识别依据") {
                     LabeledContent("照片", value: "\(target.photoCount) 张")
-                    LabeledContent("地点", value: "\(target.placeCount) 个")
+                    LabeledContent("地点", value: "\(mainPlaces.count) 个")
                     LabeledContent("移动距离", value: Formatters.distance(target.totalDistance))
-                    if !target.mainPlaces.isEmpty {
-                        ForEach(target.mainPlaces, id: \.self) { Label($0, systemImage: "mappin") }
-                    }
                 }
             }
             .navigationTitle(target.record == nil ? "确认旅行建议" : "编辑旅行归档")
@@ -220,21 +257,35 @@ private struct TravelArchiveEditorView: View {
         }
     }
 
+    private func addPlace() {
+        let name = newPlaceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !mainPlaces.contains(name) else { return }
+        mainPlaces.append(name)
+        newPlaceName = ""
+    }
+
+    private func deletePlace(at offsets: IndexSet) {
+        for index in offsets.sorted(by: >) { mainPlaces.remove(at: index) }
+    }
+
     private func save() {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         if let record = target.record {
-            record.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            record.title = trimmedTitle
             record.startTime = startTime
             record.endTime = endTime
+            record.mainPlacesRawValue = mainPlaces.joined(separator: "\n")
+            record.placeCount = mainPlaces.count
             record.updatedAt = .now
         } else {
             modelContext.insert(TravelArchiveRecord(sourceFingerprint: target.sourceFingerprint,
-                                                    title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                                                    title: trimmedTitle,
                                                     startTime: startTime,
                                                     endTime: endTime,
                                                     photoCount: target.photoCount,
-                                                    placeCount: target.placeCount,
+                                                    placeCount: mainPlaces.count,
                                                     totalDistance: target.totalDistance,
-                                                    mainPlaces: target.mainPlaces))
+                                                    mainPlaces: mainPlaces))
         }
         let saved = PersistenceService.save(modelContext,
                                             operation: "保存旅行归档",

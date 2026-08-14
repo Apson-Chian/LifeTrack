@@ -361,6 +361,7 @@ private struct TravelTimelineNodeRow: View {
         case .running: .orange
         case .cycling: .green
         case .automotive: .purple
+        case .transit: .teal
         case .stationary: .indigo
         case .unknown: .gray
         }
