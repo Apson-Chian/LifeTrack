@@ -50,6 +50,7 @@ final class LocationService: NSObject, ObservableObject {
     private let placeRecognitionService = PlaceRecognitionService()
     private var pendingStay: StayRecord?
     private var cachedPlaces: [CustomPlace] = []
+    private var cachedGeofences: [UUID: PlaceGeofence] = [:]
     private var pendingAlwaysRequest = false
     private var isConfigured = false
     private var unsavedTrackPointCount = 0
@@ -226,6 +227,8 @@ final class LocationService: NSObject, ObservableObject {
         guard let modelContext else { return }
         do {
             cachedPlaces = try modelContext.fetch(FetchDescriptor<CustomPlace>())
+            cachedGeofences = Dictionary(uniqueKeysWithValues:
+                try modelContext.fetch(FetchDescriptor<PlaceGeofence>()).map { ($0.placeID, $0) })
         } catch {
             recordError("刷新地点缓存失败：\(error.localizedDescription)", critical: false)
             logger.error("Place cache refresh failed: \(String(reflecting: error), privacy: .public)")
@@ -492,11 +495,15 @@ final class LocationService: NSObject, ObservableObject {
     private func updatePlaceRecognition(for location: CLLocation,
                                         session: ActivitySession) {
         guard let modelContext else { return }
-        let matchingPlace = placeRecognitionService.matchingPlace(for: location, places: cachedPlaces)
+        let matchingPlace = placeRecognitionService.matchingPlace(for: location,
+                                                                  places: cachedPlaces,
+                                                                  geofences: cachedGeofences)
 
         if let pendingStay,
            let currentPlace = cachedPlaces.first(where: { $0.id == pendingStay.customPlaceID }),
-           !placeRecognitionService.hasExited(currentPlace, location: location) {
+           !placeRecognitionService.hasExited(currentPlace,
+                                              location: location,
+                                              geofence: cachedGeofences[currentPlace.id]) {
             pendingStay.duration = max(0, location.timestamp.timeIntervalSince(pendingStay.arrivalTime))
             return
         }
@@ -528,11 +535,15 @@ final class LocationService: NSObject, ObservableObject {
         guard let modelContext, let latestPoint = orderedPoints.last else { return }
 
         let latestLocation = Self.location(for: latestPoint)
-        let matchingPlace = placeRecognitionService.matchingPlace(for: latestLocation, places: cachedPlaces)
+        let matchingPlace = placeRecognitionService.matchingPlace(for: latestLocation,
+                                                                  places: cachedPlaces,
+                                                                  geofences: cachedGeofences)
 
         for openRecord in session.stayRecords.filter({ $0.departureTime == nil }) {
             guard let place = cachedPlaces.first(where: { $0.id == openRecord.customPlaceID }),
-                  !placeRecognitionService.hasExited(place, location: latestLocation),
+                  !placeRecognitionService.hasExited(place,
+                                                     location: latestLocation,
+                                                     geofence: cachedGeofences[place.id]),
                   place.id == matchingPlace?.id else {
                 closeRecoveredStay(openRecord, at: latestPoint.timestamp)
                 continue
@@ -569,12 +580,12 @@ final class LocationService: NSObject, ObservableObject {
                                      endingAt latest: Date) -> Date {
         var arrival = latest
         var laterTimestamp = latest
-        let center = CLLocation(latitude: place.latitude, longitude: place.longitude)
-
         for point in orderedPoints.reversed() {
             guard laterTimestamp.timeIntervalSince(point.timestamp) <= Self.maximumStayPointGap else { break }
             let location = Self.location(for: point)
-            guard location.distance(from: center) <= place.radius + 20 else { break }
+            guard !placeRecognitionService.hasExited(place,
+                                                     location: location,
+                                                     geofence: cachedGeofences[place.id]) else { break }
             arrival = point.timestamp
             laterTimestamp = point.timestamp
         }

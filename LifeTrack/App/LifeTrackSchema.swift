@@ -51,6 +51,16 @@ enum LifeTrackSchemaV4: VersionedSchema {
     }
 }
 
+enum LifeTrackSchemaV5: VersionedSchema {
+    static let versionIdentifier = Schema.Version(5, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        var result: [any PersistentModel.Type] = LifeTrackSchemaV4.models
+        result.append(PlaceGeofence.self)
+        return result
+    }
+}
+
 extension LifeTrackSchemaV4 {
     /// AI 生成的生活/学习轨迹洞察。
     @Model
@@ -75,7 +85,7 @@ extension LifeTrackSchemaV4 {
 
 enum LifeTrackMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [LifeTrackSchemaV1.self, LifeTrackSchemaV2.self, LifeTrackSchemaV3.self, LifeTrackSchemaV4.self]
+        [LifeTrackSchemaV1.self, LifeTrackSchemaV2.self, LifeTrackSchemaV3.self, LifeTrackSchemaV4.self, LifeTrackSchemaV5.self]
     }
 
     static var stages: [MigrationStage] {
@@ -85,7 +95,9 @@ enum LifeTrackMigrationPlan: SchemaMigrationPlan {
             MigrationStage.lightweight(fromVersion: LifeTrackSchemaV2.self,
                                        toVersion: LifeTrackSchemaV3.self),
             MigrationStage.lightweight(fromVersion: LifeTrackSchemaV3.self,
-                                       toVersion: LifeTrackSchemaV4.self)
+                                       toVersion: LifeTrackSchemaV4.self),
+            MigrationStage.lightweight(fromVersion: LifeTrackSchemaV4.self,
+                                       toVersion: LifeTrackSchemaV5.self)
         ]
     }
 }

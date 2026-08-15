@@ -91,7 +91,8 @@ struct InsightAssistantView: View {
             }
             .padding(.vertical, 4)
 
-            Label("了解记录，不窥探照片", systemImage: "checkmark.shield.fill")
+            Label(AISettings.sharesPhotoLocation ? "可按授权理解照片地点，不读取原图" : "了解记录，不窥探照片地点与原图",
+                  systemImage: "checkmark.shield.fill")
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(.green)
         }
@@ -99,9 +100,6 @@ struct InsightAssistantView: View {
 
     private var conversationSection: some View {
         Section("对话") {
-            ForEach(Array(assistantCenter.conversation.enumerated()), id: \.offset) { index, turn in
-                ConversationTurnCard(index: index + 1, question: turn.question, answer: turn.answer)
-            }
             if let activeQuestion = assistantCenter.activeQuestion {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("正在回答")
@@ -127,6 +125,9 @@ struct InsightAssistantView: View {
                 .background(Color(uiColor: .secondarySystemBackground),
                             in: RoundedRectangle(cornerRadius: 16))
                 .listRowSeparator(.hidden)
+            }
+            ForEach(Array(assistantCenter.conversation.enumerated()).reversed(), id: \.offset) { index, turn in
+                ConversationTurnCard(index: index + 1, question: turn.question, answer: turn.answer)
             }
         }
     }
@@ -168,7 +169,9 @@ struct InsightAssistantView: View {
                 }
             }
         } footer: {
-            Text("管家可读取照片的拍摄时间、脱敏地点、轨迹关联和本机安全主题，但无法读取照片画面。")
+            Text(AISettings.sharesPhotoLocation
+                 ? "已允许管家使用照片时间、精确坐标和地点做附近检索；原图和人物信息不会发送。"
+                 : "照片地点当前未授权给 AI；管家仍无法读取照片画面。可在“设置 → AI 管家”中单独开启。")
         }
     }
 
@@ -188,7 +191,7 @@ struct InsightAssistantView: View {
         } header: {
             Text("让管家主动整理")
         } footer: {
-            Text("旅行整理先排除家、学校等日常区域，再结合照片时间、脱敏地点和轨迹恢复旅行；照片画面不会交给 AI。")
+            Text("旅行整理先排除家、学校等日常区域，再结合照片时间、已授权地点和轨迹恢复旅行；照片画面不会交给 AI。")
         }
     }
 
@@ -210,9 +213,9 @@ struct InsightAssistantView: View {
         case .general: "从运动、轨迹、地点、课表、旅行等记录理解你的生活，并陪你持续对话。"
         case .today: "先看今天发生了什么，也会与过去的生活节奏比较。"
         case .activity: "理解运动类型、距离、时长和变化趋势，给出可执行建议。"
-        case .places: "理解常去地点和停留规律；地点坐标不会发送给模型。"
+        case .places: AISettings.sharesPhotoLocation ? "理解常去地点、精确照片坐标和附近关系。" : "理解常去地点和停留规律；照片地点未授权给模型。"
         case .schedule: "综合课程、学习停留、运动与恢复节奏。"
-        case .photos: "理解照片时间、脱敏地点、轨迹关联和本机安全主题，但不读取任何图像。"
+        case .photos: AISettings.sharesPhotoLocation ? "理解照片时间、精确地点、轨迹关联和本机安全主题，但不读取任何图像。" : "理解照片时间、轨迹关联和本机安全主题；照片地点未授权。"
         case .travel: "先排除家、学校与日常活动圈，再整理真正的旅行。"
         }
     }

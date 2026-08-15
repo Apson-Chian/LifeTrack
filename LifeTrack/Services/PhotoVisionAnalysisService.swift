@@ -1,6 +1,44 @@
 import Foundation
 import Photos
 import Vision
+
+enum PhotoAnalysisPerformance: String, CaseIterable, Identifiable {
+    case energySaving
+    case balanced
+
+    private static let preferenceKey = "photo.analysisPerformance"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .energySaving: "低负载"
+        case .balanced: "均衡"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .energySaving: "默认。每张照片之间主动暂停，避免 CPU 长时间满载。"
+        case .balanced: "整理更快，但分析期间 CPU 和耗电会更高。"
+        }
+    }
+
+    var nominalPauseNanoseconds: UInt64 {
+        switch self {
+        case .energySaving: 350_000_000
+        case .balanced: 80_000_000
+        }
+    }
+
+    static var selected: PhotoAnalysisPerformance {
+        PhotoAnalysisPerformance(rawValue: UserDefaults.standard.string(forKey: preferenceKey) ?? "") ?? .energySaving
+    }
+
+    static func setSelected(_ value: PhotoAnalysisPerformance) {
+        UserDefaults.standard.set(value.rawValue, forKey: preferenceKey)
+    }
+}
 import UIKit
 import CoreLocation
 import ImageIO
@@ -95,7 +133,7 @@ enum PhotoVisionAnalysisService {
                                              state: .thumbnailUnavailable)
         }
 
-        return await Task.detached(priority: .utility) {
+        return await Task.detached(priority: .background) {
             autoreleasepool {
                 analyzeLocally(thumbnail, isSelfie: descriptor.isSelfie)
             }

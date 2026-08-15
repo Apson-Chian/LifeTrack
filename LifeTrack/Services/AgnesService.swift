@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - 隐私红线
 // OpenAI Chat Completions 兼容的纯文本客户端。无论选择 Agnes 或 DeepSeek，
-// 请求结构都不存在图片分支；照片只能由 PhotoAIPrivacyFilter 输出时间、脱敏地点、
+// 请求结构都不存在图片分支；照片只能由 PhotoAIPrivacyFilter 输出时间、用户授权的地点/坐标、
 // 轨迹关联和安全主题等纯文字元数据。
 
 enum AIProvider: String, CaseIterable, Identifiable {
@@ -33,6 +33,7 @@ struct AIProviderConfiguration: Sendable {
 enum AISettings {
     private static let enabledKey = "ai.enabled"
     private static let providerKey = "ai.provider"
+    private static let sharesPhotoLocationKey = "ai.sharesPhotoLocation"
 
     static var isEnabled: Bool {
         if UserDefaults.standard.object(forKey: enabledKey) == nil {
@@ -49,6 +50,15 @@ enum AISettings {
 
     static func setSelectedProvider(_ provider: AIProvider) {
         UserDefaults.standard.set(provider.rawValue, forKey: providerKey)
+    }
+
+    /// Separate, explicit consent: enabling the assistant never implicitly shares photo places.
+    static var sharesPhotoLocation: Bool {
+        UserDefaults.standard.bool(forKey: sharesPhotoLocationKey)
+    }
+
+    static func setSharesPhotoLocation(_ allowed: Bool) {
+        UserDefaults.standard.set(allowed, forKey: sharesPhotoLocationKey)
     }
 
     static func model(for provider: AIProvider) -> String {

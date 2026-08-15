@@ -28,6 +28,10 @@ struct PlaceEditorView: View {
     @State private var isFavorite = false
     @State private var isAlwaysVisible = true
     @State private var isCampusPlace = false
+    @State private var areaType: PlaceAreaType = .ordinary
+    @State private var boundaryVertices: [CLLocationCoordinate2D] = []
+    @State private var isDrawingBoundary = false
+    @State private var didLoadGeofence = false
     @State private var isLoadingAddress = false
     @State private var saveError: String?
 
@@ -55,18 +59,55 @@ struct PlaceEditorView: View {
                     TextField("备注", text: $note, axis: .vertical)
                 }
                 Section("位置") {
-                    PlaceRadiusEditorMap(coordinate: $selectedCoordinate, radius: $radius)
+                    PlaceRadiusEditorMap(coordinate: $selectedCoordinate,
+                                         radius: $radius,
+                                         boundaryVertices: $boundaryVertices,
+                                         isDrawingBoundary: $isDrawingBoundary)
                         .frame(height: 260)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
-                    Text("长按地图或拖动标记可调整地点中心，蓝色范围圆就是自动打卡区域。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Picker("边界方式", selection: $isDrawingBoundary) {
+                        Text("圆形半径").tag(false)
+                        Text("手绘区域").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: isDrawingBoundary) { _, drawing in
+                        if !drawing { boundaryVertices.removeAll() }
+                    }
+                    if isDrawingBoundary {
+                        HStack {
+                            Button("撤销上一点") { _ = boundaryVertices.popLast() }
+                                .disabled(boundaryVertices.isEmpty)
+                            Spacer()
+                            Button("清空", role: .destructive) { boundaryVertices.removeAll() }
+                                .disabled(boundaryVertices.isEmpty)
+                        }
+                        Text(boundaryVertices.count < 3
+                             ? "依次轻点地图添加至少 3 个边界点（当前 \(boundaryVertices.count) 个）。"
+                             : "已形成手绘区域；继续轻点可细化边界。")
+                            .font(.caption)
+                            .foregroundStyle(boundaryVertices.count < 3 ? Color.orange : Color.secondary)
+                    } else {
+                        Text("长按地图或拖动标记可调整中心，蓝色范围圆就是自动打卡区域。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     LabeledContent("坐标", value: String(format: "%.5f, %.5f", selectedCoordinate.latitude, selectedCoordinate.longitude))
                     if isLoadingAddress { ProgressView("正在查询地址") }
                     Button("使用反查地址名称") { lookupAddress() }
                 }
                 Section("识别") {
+                    Picker("区域类型", selection: $areaType) {
+                        ForEach(PlaceAreaType.allCases) { type in
+                            Label(type.title, systemImage: type.symbolName).tag(type)
+                        }
+                    }
+                    .onChange(of: areaType) { _, type in
+                        guard type != .ordinary else { return }
+                        category = type.defaultCategory
+                        symbolName = type.symbolName
+                        if type == .campus { isCampusPlace = true }
+                    }
                     Toggle("设为校园地点", isOn: $isCampusPlace)
                     Picker("分类", selection: $category) {
                         ForEach(PlaceCategory.allCases) { Text($0.displayName).tag($0) }
@@ -80,6 +121,7 @@ struct PlaceEditorView: View {
                         Text("识别半径：\(Int(radius)) 米")
                         Slider(value: $radius, in: 20...500, step: 5)
                     }
+                    .disabled(isDrawingBoundary)
                 }
                 Section {
                     Toggle("收藏", isOn: $isFavorite)
@@ -100,6 +142,7 @@ struct PlaceEditorView: View {
                 Text(saveError ?? "请稍后重试。")
             }
         }
+        .task { loadGeofenceIfNeeded() }
     }
 
     private func lookupAddress() {
@@ -114,6 +157,11 @@ struct PlaceEditorView: View {
     }
 
     private func save() {
+        if isDrawingBoundary && boundaryVertices.count < 3 {
+            saveError = "手绘区域至少需要 3 个边界点。"
+            return
+        }
+        let savedPlace: CustomPlace
         if let existingPlace {
             existingPlace.shortName = shortName
             existingPlace.officialName = officialName.nilIfEmpty
@@ -127,8 +175,9 @@ struct PlaceEditorView: View {
             existingPlace.isAlwaysVisible = isAlwaysVisible
             existingPlace.isCampusPlace = isCampusPlace
             existingPlace.updatedAt = .now
+            savedPlace = existingPlace
         } else {
-            modelContext.insert(CustomPlace(shortName: shortName,
+            let place = CustomPlace(shortName: shortName,
                                             officialName: officialName.nilIfEmpty,
                                             note: note.nilIfEmpty,
                                             latitude: selectedCoordinate.latitude,
@@ -138,8 +187,11 @@ struct PlaceEditorView: View {
                                             symbolName: symbolName,
                                             isFavorite: isFavorite,
                                             isAlwaysVisible: isAlwaysVisible,
-                                            isCampusPlace: isCampusPlace))
+                                            isCampusPlace: isCampusPlace)
+            modelContext.insert(place)
+            savedPlace = place
         }
+        saveGeofence(for: savedPlace.id)
         let saved = PersistenceService.save(modelContext,
                                             operation: "保存地点",
                                             failureRecovery: .rollback) { message in
@@ -149,6 +201,30 @@ struct PlaceEditorView: View {
             LocationService.shared.refreshPlaceCache()
             dismiss()
         }
+    }
+
+    private func loadGeofenceIfNeeded() {
+        guard !didLoadGeofence else { return }
+        didLoadGeofence = true
+        guard let placeID = existingPlace?.id else {
+            areaType = isCampusPlace ? .campus : .ordinary
+            return
+        }
+        let descriptor = FetchDescriptor<PlaceGeofence>(predicate: #Predicate { $0.placeID == placeID })
+        guard let geofence = try? modelContext.fetch(descriptor).first else { return }
+        areaType = geofence.areaType
+        boundaryVertices = geofence.vertices
+        isDrawingBoundary = boundaryVertices.count >= 3
+    }
+
+    private func saveGeofence(for placeID: UUID) {
+        let descriptor = FetchDescriptor<PlaceGeofence>(predicate: #Predicate { $0.placeID == placeID })
+        let existing = try? modelContext.fetch(descriptor).first
+        let geofence = existing ?? PlaceGeofence(placeID: placeID)
+        if existing == nil { modelContext.insert(geofence) }
+        geofence.areaType = areaType
+        geofence.vertices = isDrawingBoundary ? boundaryVertices : []
+        geofence.updatedAt = .now
     }
 
     private var saveErrorPresented: Binding<Bool> {

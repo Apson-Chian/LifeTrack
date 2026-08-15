@@ -4,6 +4,8 @@ import MapKit
 struct PlaceRadiusEditorMap: UIViewRepresentable {
     @Binding var coordinate: CLLocationCoordinate2D
     @Binding var radius: Double
+    @Binding var boundaryVertices: [CLLocationCoordinate2D]
+    @Binding var isDrawingBoundary: Bool
 
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView()
@@ -21,6 +23,10 @@ struct PlaceRadiusEditorMap: UIViewRepresentable {
         let longPress = UILongPressGestureRecognizer(target: context.coordinator,
                                                      action: #selector(Coordinator.longPressed(_:)))
         map.addGestureRecognizer(longPress)
+        let tap = UITapGestureRecognizer(target: context.coordinator,
+                                         action: #selector(Coordinator.tapped(_:)))
+        tap.require(toFail: longPress)
+        map.addGestureRecognizer(tap)
         return map
     }
 
@@ -31,7 +37,16 @@ struct PlaceRadiusEditorMap: UIViewRepresentable {
         }
 
         map.removeOverlays(map.overlays)
-        map.addOverlay(MKCircle(center: coordinate, radius: radius))
+        map.removeAnnotations(map.annotations.filter { $0 is BoundaryVertexAnnotation })
+        if boundaryVertices.count >= 3 {
+            var vertices = boundaryVertices
+            map.addOverlay(MKPolygon(coordinates: &vertices, count: vertices.count))
+        } else {
+            map.addOverlay(MKCircle(center: coordinate, radius: radius))
+        }
+        for (index, vertex) in boundaryVertices.enumerated() {
+            map.addAnnotation(BoundaryVertexAnnotation(coordinate: vertex, index: index))
+        }
 
         guard !context.coordinator.hasSetInitialRegion else { return }
         let span = max(radius * 4, 600)
@@ -58,13 +73,33 @@ struct PlaceRadiusEditorMap: UIViewRepresentable {
 
         @objc func longPressed(_ recognizer: UILongPressGestureRecognizer) {
             guard recognizer.state == .began,
-                  let map = recognizer.view as? MKMapView else { return }
+                  let map = recognizer.view as? MKMapView,
+                  !parent.isDrawingBoundary else { return }
             let newCoordinate = map.convert(recognizer.location(in: map), toCoordinateFrom: map)
             annotation.coordinate = newCoordinate
             parent.coordinate = newCoordinate
         }
 
+        @objc func tapped(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended,
+                  let map = recognizer.view as? MKMapView,
+                  parent.isDrawingBoundary else { return }
+            parent.boundaryVertices.append(
+                map.convert(recognizer.location(in: map), toCoordinateFrom: map)
+            )
+        }
+
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            if let vertex = annotation as? BoundaryVertexAnnotation {
+                let identifier = "BoundaryVertex"
+                let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) as? MKMarkerAnnotationView
+                    ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: identifier)
+                view.annotation = annotation
+                view.markerTintColor = .systemIndigo
+                view.glyphText = "\(vertex.index + 1)"
+                view.displayPriority = .required
+                return view
+            }
             guard annotation === self.annotation else { return nil }
             let identifier = "PlaceRadiusCenter"
             let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) as? MKMarkerAnnotationView
@@ -98,14 +133,29 @@ struct PlaceRadiusEditorMap: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
-            guard let circle = overlay as? MKCircle else {
-                return MKOverlayRenderer(overlay: overlay)
+            if let polygon = overlay as? MKPolygon {
+                let renderer = MKPolygonRenderer(polygon: polygon)
+                renderer.strokeColor = .systemIndigo
+                renderer.fillColor = UIColor.systemIndigo.withAlphaComponent(0.18)
+                renderer.lineWidth = 2
+                return renderer
             }
+            guard let circle = overlay as? MKCircle else { return MKOverlayRenderer(overlay: overlay) }
             let renderer = MKCircleRenderer(circle: circle)
             renderer.strokeColor = .systemBlue
             renderer.fillColor = UIColor.systemBlue.withAlphaComponent(0.16)
             renderer.lineWidth = 2
             return renderer
         }
+    }
+}
+
+private final class BoundaryVertexAnnotation: MKPointAnnotation {
+    let index: Int
+
+    init(coordinate: CLLocationCoordinate2D, index: Int) {
+        self.index = index
+        super.init()
+        self.coordinate = coordinate
     }
 }

@@ -10,6 +10,7 @@ struct AISettingsView: View {
     @State private var testMessage: String?
     @State private var testFailed = false
     @State private var showTestAlert = false
+    @State private var sharesPhotoLocation = AISettings.sharesPhotoLocation
 
     var body: some View {
         Form {
@@ -59,17 +60,32 @@ struct AISettingsView: View {
                 Label("离开助手页面后继续生成回答", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
             }
 
-            Section("照片隐私边界") {
+            Section {
+                Toggle("允许 AI 使用照片地点", isOn: $sharesPhotoLocation)
+                    .onChange(of: sharesPhotoLocation) { _, allowed in
+                        AISettings.setSharesPhotoLocation(allowed)
+                    }
+                Label("开启后可理解地点名称并检索附近照片", systemImage: "map.fill")
+                    .font(.footnote)
+                Text("例如询问“长荡湖附近的照片”时，LifeTrack 会用 Apple 地图解析地点，并在本机完成距离筛选；授权后会把地点名称、精确坐标、约距离和照片文字摘要交给 AI，原图仍不会上传。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 Label("可以知道", systemImage: "checkmark.shield")
                     .font(.headline)
-                Text("本机聚合后的非人物类别、通用主题，以及某段已识别旅行包含多少张照片。")
+                Text(sharesPhotoLocation
+                     ? "拍摄时间、照片地点名称、精确坐标、约距离、轨迹关联，以及本机生成的非人物类别和通用主题。"
+                     : "本机聚合后的非人物类别、通用主题，以及某段已识别旅行包含多少张照片；照片地点不会提供给 AI。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Label("永远看不到", systemImage: "eye.slash")
                     .font(.headline)
-                Text("原图、缩略图、人物与自拍、单张照片、资产标识符、路径、坐标和拍摄时间。照片 GPS 只在本机用于排除日常照片。")
+                Text("原图、缩略图、人物与自拍、资产标识符和文件路径。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            } header: {
+                Text("照片地点与隐私")
+            } footer: {
+                Text("此授权可随时关闭。关闭后，地图解析和照片地点信息都不会提供给 AI。")
             }
 
             Section("当前连接") {

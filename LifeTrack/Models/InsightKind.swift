@@ -24,7 +24,7 @@ enum InsightKind: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .dailyReflection: "sun.max.fill"
         case .weeklyReview: "calendar.badge.clock"
-        case .learningLifeBalance: "scale.fill"
+        case .learningLifeBalance: "figure.mind.and.body"
         case .travelStory: "airplane.departure"
         case .custom: "sparkles"
         }

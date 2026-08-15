@@ -625,8 +625,8 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertFalse(summary.contains("person"))
         XCTAssertFalse(summary.contains("passport"))
         XCTAssertFalse(summary.contains("secret-asset-id"))
-        XCTAssertFalse(summary.contains("31.234567"))
-        XCTAssertFalse(summary.contains("121.456789"))
+        XCTAssertTrue(summary.contains("31.234567"))
+        XCTAssertTrue(summary.contains("121.456789"))
         XCTAssertFalse(summary.contains("1700000000"))
         XCTAssertFalse(summary.contains("3 张脸"))
         XCTAssertFalse(summary.contains("image_url"))
@@ -665,6 +665,39 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertFalse(String(describing: dictionary).contains("base64"))
     }
 
+    func testHandDrawnGeofenceUsesPolygonInsteadOfRadius() {
+        let place = CustomPlace(shortName: "图书馆",
+                                latitude: 31.0,
+                                longitude: 121.0,
+                                radius: 20)
+        let geofence = PlaceGeofence(
+            placeID: place.id,
+            areaType: .library,
+            vertices: [
+                .init(latitude: 30.999, longitude: 120.999),
+                .init(latitude: 30.999, longitude: 121.002),
+                .init(latitude: 31.002, longitude: 121.002),
+                .init(latitude: 31.002, longitude: 120.999)
+            ]
+        )
+        let service = PlaceRecognitionService()
+
+        let insidePolygonOutsideCircle = CLLocation(latitude: 31.0015, longitude: 121.0015)
+        XCTAssertEqual(service.matchingPlace(for: insidePolygonOutsideCircle,
+                                             places: [place],
+                                             geofences: [place.id: geofence])?.id,
+                       place.id)
+        XCTAssertFalse(service.hasExited(place,
+                                         location: insidePolygonOutsideCircle,
+                                         geofence: geofence))
+
+        let outside = CLLocation(latitude: 31.003, longitude: 121.003)
+        XCTAssertNil(service.matchingPlace(for: outside,
+                                           places: [place],
+                                           geofences: [place.id: geofence]))
+        XCTAssertTrue(service.hasExited(place, location: outside, geofence: geofence))
+    }
+
     func testAgentSchemaMigratesFromV3ToV4() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("agent-migration-\(UUID().uuidString).store")
@@ -698,7 +731,7 @@ final class ReliabilityTests: XCTestCase {
     }
 
     private func makeContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: LifeTrackSchemaV4.self)
+        let schema = Schema(versionedSchema: LifeTrackSchemaV5.self)
         let configuration = ModelConfiguration(schema: schema,
                                                isStoredInMemoryOnly: true,
                                                cloudKitDatabase: .none)
@@ -710,7 +743,7 @@ final class ReliabilityTests: XCTestCase {
     private func withReadOnlyContainer<T>(_ body: (ModelContainer) throws -> T) throws -> T {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("readonly-\(UUID().uuidString).store")
-        let schema = Schema(versionedSchema: LifeTrackSchemaV4.self)
+        let schema = Schema(versionedSchema: LifeTrackSchemaV5.self)
         var writable: ModelContainer? = try ModelContainer(
             for: schema,
             migrationPlan: LifeTrackMigrationPlan.self,
