@@ -676,16 +676,21 @@ private final class TrackGlowOverlay: NSObject, MKOverlay {
 
     private static func densified(_ segments: [TrackDisplaySegment], interpolatesBetweenPoints: Bool) -> [TrackMapPoint] {
         var result: [TrackMapPoint] = []
+        let maxPointsBudget = 1_500
         for segment in segments {
             guard segment.coordinates.count > 1 else { continue }
-            for index in 1..<segment.coordinates.count {
+            let count = segment.coordinates.count
+            // 如果点数过多，执行自适应采样步长
+            let stepStride = max(1, count / 400)
+            for index in stride(from: 1, to: count, by: stepStride) {
+                if result.count >= maxPointsBudget { break }
                 let previous = segment.coordinates[index - 1]
                 let current = segment.coordinates[index]
                 result.append(TrackMapPoint(coordinate: previous,
                                             activityType: segment.activityType,
                                             segmentID: segment.id,
                                             source: segment.source))
-                guard interpolatesBetweenPoints else {
+                guard interpolatesBetweenPoints, result.count < maxPointsBudget else {
                     if index == segment.coordinates.count - 1 {
                         result.append(TrackMapPoint(coordinate: current,
                                                     activityType: segment.activityType,
@@ -695,9 +700,10 @@ private final class TrackGlowOverlay: NSObject, MKOverlay {
                     continue
                 }
                 let distance = previous.distance(to: current)
-                let steps = min(max(Int(distance / 36), 0), 80)
+                let steps = min(max(Int(distance / 45), 0), 20)
                 guard steps > 0 else { continue }
                 for step in 1...steps {
+                    guard result.count < maxPointsBudget else { break }
                     let progress = Double(step) / Double(steps + 1)
                     let latitude = previous.latitude + (current.latitude - previous.latitude) * progress
                     let longitude = previous.longitude + (current.longitude - previous.longitude) * progress
@@ -866,14 +872,15 @@ private final class TrackGradientRenderer: MKOverlayRenderer {
     }
 }
 
-/// 速度→颜色色标：慢（蓝）→中（绿/黄）→快（橙红）。
+/// 速度→颜色色标：慢（深蓝/青）→稳态（翡翠绿）→提速（暖金黄）→极速（烈焰橙红）。
 private func speedRampColor(_ t: Double) -> UIColor {
     let t = min(max(CGFloat(t), 0), 1)
     let stops: [(CGFloat, UIColor)] = [
-        (0.0, UIColor(red: 0.20, green: 0.55, blue: 1.00, alpha: 1)),
-        (0.40, UIColor(red: 0.24, green: 0.83, blue: 0.66, alpha: 1)),
-        (0.70, UIColor(red: 0.98, green: 0.80, blue: 0.30, alpha: 1)),
-        (1.0, UIColor(red: 1.00, green: 0.36, blue: 0.28, alpha: 1))
+        (0.00, UIColor(red: 0.12, green: 0.38, blue: 0.94, alpha: 1)), // 深宝蓝
+        (0.25, UIColor(red: 0.05, green: 0.72, blue: 0.92, alpha: 1)), // 青蓝
+        (0.50, UIColor(red: 0.10, green: 0.82, blue: 0.48, alpha: 1)), // 翡翠绿
+        (0.75, UIColor(red: 0.98, green: 0.72, blue: 0.12, alpha: 1)), // 暖金
+        (1.00, UIColor(red: 0.98, green: 0.24, blue: 0.24, alpha: 1))  // 烈焰红
     ]
     for i in 0..<stops.count - 1 {
         let (p0, c0) = stops[i]

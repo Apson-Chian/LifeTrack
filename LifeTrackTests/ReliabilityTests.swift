@@ -773,6 +773,70 @@ final class ReliabilityTests: XCTestCase {
         }
     }
 
+    func testMarkdownExportGeneratesValidStructureForEmptyDate() async throws {
+        let container = try makeContainer()
+        let testDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let md = await MarkdownExportService.generateDailyMarkdown(for: testDate, context: container.mainContext)
+        XCTAssertTrue(md.contains("生活与轨迹复盘"))
+        XCTAssertTrue(md.contains("date:"))
+        XCTAssertTrue(md.contains("今日量化简报"))
+        XCTAssertTrue(md.contains("今日时间线"))
+    }
+
+    func testMarkdownExportAggregatesSessionsStaysAndInsights() async throws {
+        let container = try makeContainer()
+        let testDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let session = try insertSampleSession(into: container.mainContext)
+        let stay = StayRecord(placeID: UUID(),
+                              detectedName: "图书馆自习室",
+                              latitude: 31.201,
+                              longitude: 121.401,
+                              arrivalTime: testDate.addingTimeInterval(3600),
+                              departureTime: testDate.addingTimeInterval(7200),
+                              placeCategory: "学习教学")
+        container.mainContext.insert(stay)
+
+        let insight = LifeInsightRecord(kind: "dailyReflection",
+                                        title: "充实的学习日",
+                                        content: "今天在图书馆专注自习了1小时。")
+        insight.createdAt = testDate.addingTimeInterval(8000)
+        container.mainContext.insert(insight)
+        try container.mainContext.save()
+
+        let md = await MarkdownExportService.generateDailyMarkdown(for: testDate, context: container.mainContext)
+        XCTAssertTrue(md.contains("图书馆自习室"))
+        XCTAssertTrue(md.contains("充实的学习日"))
+        XCTAssertTrue(md.contains("步行"))
+        XCTAssertTrue(md.contains("total_distance_km:"))
+        XCTAssertTrue(md.contains("study_duration_min:"))
+    }
+
+    func testMarkdownExportCustomOptionsToggle() async throws {
+        let container = try makeContainer()
+        let testDate = Date(timeIntervalSince1970: 1_700_000_000)
+        var options = MarkdownExportOptions.standard
+        options.includeYAMLFrontmatter = false
+        options.includeStatsTable = false
+
+        let md = await MarkdownExportService.generateDailyMarkdown(for: testDate,
+                                                                 context: container.mainContext,
+                                                                 options: options)
+        XCTAssertFalse(md.hasPrefix("---"))
+        XCTAssertFalse(md.contains("今日量化简报"))
+        XCTAssertTrue(md.contains("生活与轨迹复盘"))
+    }
+
+    func testMarkdownExportCreatesValidTemporaryFile() throws {
+        let testDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let sampleContent = "# Test Markdown"
+        let url = try MarkdownExportService.createTemporaryMarkdownFile(content: sampleContent, for: testDate)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        let readBack = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertEqual(readBack, sampleContent)
+    }
+
     @discardableResult
     private func insertSampleSession(into context: ModelContext) throws -> ActivitySession {
         insertSession(start: Date(timeIntervalSince1970: 1_700_000_000),

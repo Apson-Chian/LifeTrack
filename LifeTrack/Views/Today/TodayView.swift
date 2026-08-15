@@ -21,6 +21,7 @@ struct TodayView: View {
     @State private var photoAuthorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @State private var isLoadingPhotos = false
     @State private var selectedTrackPhoto: PhotoDetailItem?
+    @State private var showMarkdownExportSheet = false
 
     private var todaySessions: [ActivitySession] {
         sessions.filter { Calendar.current.isDateInToday($0.startTime) }
@@ -48,6 +49,7 @@ struct TodayView: View {
                     recordingControls
                     summary
                     todayPhotoStory
+                    secondBrainCard
                     AssistantFeatureCard(
                         context: .today,
                         title: "让 AI 分析今天的运动",
@@ -62,12 +64,22 @@ struct TodayView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        Button { showDestinationSearch = true } label: { Label("高德导航", systemImage: "location.north.line") }
+                        Button { showMarkdownExportSheet = true } label: {
+                            Label("导出今日 Markdown 日记", systemImage: "doc.text.badge.plus")
+                        }
+                        Button { showDestinationSearch = true } label: {
+                            Label("高德导航", systemImage: "location.north.line")
+                        }
                         Button {
                             markCurrentLocation()
-                        } label: { Label("标记当前位置", systemImage: "mappin.circle.fill") }
+                        } label: {
+                            Label("标记当前位置", systemImage: "mappin.circle.fill")
+                        }
                     } label: { Image(systemName: "plus") }
                 }
+            }
+            .sheet(isPresented: $showMarkdownExportSheet) {
+                DailyMarkdownExportSheet(date: Date(), photoDescriptors: photoDescriptors)
             }
             .sheet(item: $placeDraft) { draft in
                 PlaceEditorView(coordinate: draft.coordinate)
@@ -319,6 +331,56 @@ struct TodayView: View {
                 }
             }
         }
+    private var secondBrainCard: some View {
+        Button {
+            showMarkdownExportSheet = true
+        } label: {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(
+                            LinearGradient(colors: [Color.indigo, Color.purple.opacity(0.85)],
+                                           startPoint: .topLeading,
+                                           endPoint: .bottomTrailing)
+                        )
+                        .frame(width: 42, height: 42)
+                    Image(systemName: "doc.plaintext.fill")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.white)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text("联动第二大脑")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Text("Obsidian / Notion")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(Color.indigo.opacity(0.08), in: Capsule())
+                    }
+                    Text("一键复制或导出今日标准 Markdown 日记与时间线")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color(uiColor: .secondarySystemGroupedBackground))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .strokeBorder(Color.indigo.opacity(0.12), lineWidth: 1)
+                    )
+                    .shadow(color: Color.black.opacity(0.03), radius: 6, x: 0, y: 2)
+            )
+        }
+        .buttonStyle(.plain)
         .padding(.horizontal)
     }
 
@@ -873,12 +935,25 @@ struct StatisticTile: View {
     let symbol: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label(title, systemImage: symbol).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.title3.weight(.semibold)).monospacedDigit()
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: symbol)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.title3.weight(.bold))
+                .monospacedDigit()
+                .foregroundStyle(.primary)
         }
-        .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
-        .padding(12)
-        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+        .frame(maxWidth: .infinity, minHeight: 74, alignment: .leading)
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color(uiColor: .secondarySystemGroupedBackground))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.02), radius: 4, x: 0, y: 2)
+        )
     }
 }

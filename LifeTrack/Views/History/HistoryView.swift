@@ -379,6 +379,7 @@ struct SessionDetailView: View {
     @State private var photoAuthorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @State private var selectedPhoto: PhotoDetailItem?
     @State private var placeDraft: PlaceDraft?
+    @State private var showMarkdownExport = false
 
     private var mapPoints: [TrackMapPoint] {
         session.trackPoints.sorted { $0.timestamp < $1.timestamp }.map(TrackMapPoint.init).downsampledForMap()
@@ -445,20 +446,30 @@ struct SessionDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                NavigationLink {
-                    TrackTrimView(session: session)
+                Menu {
+                    Button {
+                        showMarkdownExport = true
+                    } label: {
+                        Label("导出当日 Markdown 日记", systemImage: "doc.text.badge.plus")
+                    }
+                    Button {
+                        exportGPX()
+                    } label: {
+                        Label("导出 GPX 轨迹", systemImage: "square.and.arrow.up")
+                    }
+                    NavigationLink {
+                        TrackTrimView(session: session)
+                    } label: {
+                        Label("修剪轨迹", systemImage: "slider.horizontal.3")
+                    }
+                    .disabled(session.isActive || session.trackPoints.count < 3)
                 } label: {
-                    Label("修剪轨迹", systemImage: "slider.horizontal.3")
-                }
-                .disabled(session.isActive || session.trackPoints.count < 3)
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    exportGPX()
-                } label: {
-                    Label("导出 GPX", systemImage: "square.and.arrow.up")
+                    Image(systemName: "ellipsis.circle")
                 }
             }
+        }
+        .sheet(isPresented: $showMarkdownExport) {
+            DailyMarkdownExportSheet(date: session.startTime, photoDescriptors: photoDescriptors)
         }
         .sheet(item: $sharedFile) { file in
             ShareSheet(items: [file.url])

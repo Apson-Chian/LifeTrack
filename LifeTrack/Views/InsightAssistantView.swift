@@ -12,6 +12,7 @@ struct InsightAssistantView: View {
 
     @State private var question = ""
     @State private var configurationNeeded = false
+    @State private var showMarkdownExport = false
     @FocusState private var questionFocused: Bool
 
     private let kinds: [InsightKind] = [.dailyReflection, .weeklyReview, .learningLifeBalance, .travelStory]
@@ -47,6 +48,9 @@ struct InsightAssistantView: View {
         .navigationTitle(featureContext == .general ? "生活管家" : featureContext.title)
         .navigationBarTitleDisplayMode(featureContext == .general ? .large : .inline)
         .scrollDismissesKeyboard(.interactively)
+        .sheet(isPresented: $showMarkdownExport) {
+            DailyMarkdownExportSheet(date: Date(), photoDescriptors: [])
+        }
         .toolbar {
             if !assistantCenter.conversation.isEmpty {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -186,6 +190,18 @@ struct InsightAssistantView: View {
                         Spacer()
                         if assistantCenter.generatingKind == kind { ProgressView().controlSize(.small) }
                     }
+                }
+            }
+
+            Button {
+                showMarkdownExport = true
+            } label: {
+                HStack {
+                    Label("导出今日 Markdown 日记 (第二大脑)", systemImage: "doc.plaintext")
+                    Spacer()
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
             }
         } header: {
