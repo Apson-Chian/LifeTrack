@@ -1,6 +1,20 @@
 import Foundation
 
 enum Formatters {
+    static func dayString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
+    static func timeString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+
     static func distance(_ meters: Double) -> String {
         meters >= 1_000 ? String(format: "%.2f 公里", meters / 1_000) : String(format: "%.0f 米", meters)
     }

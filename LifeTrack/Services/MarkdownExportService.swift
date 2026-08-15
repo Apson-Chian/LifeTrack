@@ -9,22 +9,22 @@ import CoreLocation
 /// - 生成标准 YAML Frontmatter，天然兼容 Obsidian Dataview 插件；
 /// - 结构化时间线、量化统计表、自习地点停留与照片沿途时刻；
 /// - 自由配置属性开关。
-public struct MarkdownExportOptions: Sendable, Equatable {
-    public var includeYAMLFrontmatter: Bool
-    public var includeAISummary: Bool
-    public var includeTimeline: Bool
-    public var includeStatsTable: Bool
-    public var includePlaces: Bool
-    public var includePhotoMoments: Bool
-    public var includeCoordinates: Bool
+struct MarkdownExportOptions: Sendable, Equatable {
+    var includeYAMLFrontmatter: Bool
+    var includeAISummary: Bool
+    var includeTimeline: Bool
+    var includeStatsTable: Bool
+    var includePlaces: Bool
+    var includePhotoMoments: Bool
+    var includeCoordinates: Bool
 
-    public init(includeYAMLFrontmatter: Bool = true,
-                includeAISummary: Bool = true,
-                includeTimeline: Bool = true,
-                includeStatsTable: Bool = true,
-                includePlaces: Bool = true,
-                includePhotoMoments: Bool = true,
-                includeCoordinates: Bool = false) {
+    init(includeYAMLFrontmatter: Bool = true,
+         includeAISummary: Bool = true,
+         includeTimeline: Bool = true,
+         includeStatsTable: Bool = true,
+         includePlaces: Bool = true,
+         includePhotoMoments: Bool = true,
+         includeCoordinates: Bool = false) {
         self.includeYAMLFrontmatter = includeYAMLFrontmatter
         self.includeAISummary = includeAISummary
         self.includeTimeline = includeTimeline
@@ -34,17 +34,18 @@ public struct MarkdownExportOptions: Sendable, Equatable {
         self.includeCoordinates = includeCoordinates
     }
 
-    public static let standard = MarkdownExportOptions()
+    static let standard = MarkdownExportOptions()
 }
 
-public enum MarkdownExportService {
+@MainActor
+enum MarkdownExportService {
 
     /// 异步为指定日期生成标准 Markdown 日记字符串。
-    public static func generateDailyMarkdown(for date: Date = Date(),
-                                             context: ModelContext,
-                                             photoDescriptors: [PhotoLibraryAssetDescriptor] = [],
-                                             options: MarkdownExportOptions = .standard,
-                                             calendar: Calendar = .current) async -> String {
+    static func generateDailyMarkdown(for date: Date = Date(),
+                                      context: ModelContext,
+                                      photoDescriptors: [PhotoLibraryAssetDescriptor] = [],
+                                      options: MarkdownExportOptions = .standard,
+                                      calendar: Calendar = .current) async -> String {
         let startOfDay = calendar.startOfDay(for: date)
         guard let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay) else {
             return "# \(Formatters.dayString(date)) 生活日记\n\n暂无数据"
@@ -63,6 +64,9 @@ public enum MarkdownExportService {
         ))) ?? []
         await Task.yield()
 
+        let places = (try? context.fetch(FetchDescriptor<CustomPlace>())) ?? []
+        let placesByID = Dictionary(uniqueKeysWithValues: places.map { ($0.id, $0) })
+
         let courses = (try? context.fetch(FetchDescriptor<CourseEvent>())) ?? []
         let weekday = calendar.component(.weekday, from: date)
         let normalizedWeekday = weekday == 1 ? 7 : weekday - 1 // 1=周一...7=周日
@@ -79,7 +83,13 @@ public enum MarkdownExportService {
         let totalDistance = sessions.reduce(0.0) { $0 + $1.distance }
         let totalActiveDuration = sessions.reduce(0.0) { $0 + $1.duration }
         let totalStayDuration = stays.reduce(0.0) { $0 + $1.duration }
-        let studyStays = stays.filter { ($0.placeCategory?.contains("学习") ?? false) || ($0.placeCategory?.contains("教学") ?? false) }
+        let studyStays = stays.filter { stay in
+            if let placeID = stay.customPlaceID, placesByID[placeID]?.category == .study {
+                return true
+            }
+            let name = stay.detectedName ?? ""
+            return name.contains("学习") || name.contains("教学") || name.contains("图书馆") || name.contains("自习")
+        }
         let totalStudyDuration = studyStays.reduce(0.0) { $0 + $1.duration }
 
         var visitedPlaceNames: [String] = []
@@ -164,8 +174,8 @@ public enum MarkdownExportService {
                 let durationStr = Formatters.duration(stay.duration)
                 let timeRange = "\(Formatters.timeString(stay.arrivalTime)) ~ \(stay.departureTime.map(Formatters.timeString) ?? "当前")"
                 var placeLine = "\(index + 1). **\(name)** (\(timeRange), 停留 \(durationStr))"
-                if let category = stay.placeCategory, !category.isEmpty {
-                    placeLine += " `\(category)`"
+                if let placeID = stay.customPlaceID, let place = placesByID[placeID] {
+                    placeLine += " `\(place.category.displayName)`"
                 }
                 if options.includeCoordinates {
                     placeLine += " *(坐标: \(String(format: "%.4f, %.4f", stay.latitude, stay.longitude)))*"
@@ -181,13 +191,13 @@ public enum MarkdownExportService {
             for moment in photoMoments {
                 let timeStr = Formatters.timeString(moment.creationDate)
                 var line = "- `\(timeStr)` 📷"
-                if let placeName = moment.placeName, !placeName.isEmpty {
+                if let placeName = nearestPlaceName(to: moment.coordinate, places: places) {
                     line += " **\(placeName)**"
                 } else {
                     line += " **沿途拍摄**"
                 }
-                if options.includeCoordinates, let lat = moment.displayLatitude, let lon = moment.displayLongitude {
-                    line += " *(坐标: \(String(format: "%.4f, %.4f", lat, lon)))*"
+                if options.includeCoordinates {
+                    line += " *(坐标: \(String(format: "%.4f, %.4f", moment.coordinate.latitude, moment.coordinate.longitude)))*"
                 }
                 md += "\(line)\n"
             }
@@ -199,7 +209,7 @@ public enum MarkdownExportService {
     }
 
     /// 将生成的 Markdown 写入临时文件供系统分享面板使用。
-    public static func createTemporaryMarkdownFile(content: String, for date: Date) throws -> URL {
+    static func createTemporaryMarkdownFile(content: String, for date: Date) throws -> URL {
         let fileName = "LifeTrack_\(Formatters.dayString(date)).md"
         let temporaryDirectory = FileManager.default.temporaryDirectory
         let fileURL = temporaryDirectory.appendingPathComponent(fileName)
@@ -217,6 +227,19 @@ public enum MarkdownExportService {
         }
         let sorted = typeDistances.sorted { $0.value > $1.value }
         return sorted.prefix(2).map { "\($0.key.displayName) \(Formatters.distance($0.value))" }.joined(separator: ", ")
+    }
+
+    private static func nearestPlaceName(to coordinate: CLLocationCoordinate2D,
+                                         places: [CustomPlace]) -> String? {
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        return places.compactMap { place -> (name: String, distance: CLLocationDistance)? in
+            let placeLocation = CLLocation(latitude: place.latitude, longitude: place.longitude)
+            let distance = location.distance(from: placeLocation)
+            guard distance <= max(place.radius, 50) else { return nil }
+            return (place.shortName, distance)
+        }
+        .min { $0.distance < $1.distance }?
+        .name
     }
 
     private static func buildChronologicalTimeline(sessions: [ActivitySession],
@@ -263,6 +286,7 @@ public enum MarkdownExportService {
         case .running: return "🏃"
         case .cycling: return "🚴"
         case .automotive: return "🚗"
+        case .transit: return "🚇"
         case .stationary: return "🛑"
         case .unknown: return "📍"
         }

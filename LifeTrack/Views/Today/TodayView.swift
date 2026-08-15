@@ -331,6 +331,9 @@ struct TodayView: View {
                 }
             }
         }
+        .padding(.horizontal)
+    }
+
     private var secondBrainCard: some View {
         Button {
             showMarkdownExportSheet = true

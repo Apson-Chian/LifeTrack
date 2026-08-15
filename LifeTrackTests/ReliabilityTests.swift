@@ -391,6 +391,7 @@ final class ReliabilityTests: XCTestCase {
             "get_study_stats",
             "get_travel_archives",
             "get_travel_candidates",
+            "search_location_history",
             "get_sanitized_photo_summary"
         ])
         let photoTool = LifeAgentService.tools.first { $0.name == "get_sanitized_photo_summary" }
@@ -786,14 +787,14 @@ final class ReliabilityTests: XCTestCase {
     func testMarkdownExportAggregatesSessionsStaysAndInsights() async throws {
         let container = try makeContainer()
         let testDate = Date(timeIntervalSince1970: 1_700_000_000)
-        let session = try insertSampleSession(into: container.mainContext)
-        let stay = StayRecord(placeID: UUID(),
+        _ = try insertSampleSession(into: container.mainContext)
+        let stay = StayRecord(customPlaceID: UUID(),
                               detectedName: "图书馆自习室",
                               latitude: 31.201,
                               longitude: 121.401,
-                              arrivalTime: testDate.addingTimeInterval(3600),
-                              departureTime: testDate.addingTimeInterval(7200),
-                              placeCategory: "学习教学")
+                              arrivalTime: testDate.addingTimeInterval(3600))
+        stay.departureTime = testDate.addingTimeInterval(7200)
+        stay.duration = 3600
         container.mainContext.insert(stay)
 
         let insight = LifeInsightRecord(kind: "dailyReflection",
