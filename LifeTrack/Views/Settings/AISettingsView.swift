@@ -90,7 +90,7 @@ struct AISettingsView: View {
 
             Section("当前连接") {
                 LabeledContent("渠道", value: provider.displayName)
-                LabeledContent("接口", value: provider == .agnes ? "apihub.agnes-ai.com" : "api.deepseek.com")
+                LabeledContent("接口", value: provider.interfaceHost)
                 LabeledContent("状态", value: AISettings.isConfigured ? "已配置" : "未配置")
                 Link("打开 \(provider.displayName) 官网", destination: provider.website)
             }
@@ -106,10 +106,14 @@ struct AISettingsView: View {
     }
 
     private var providerFooter: String {
-        if provider == .agnes {
-            return "Agnes 提供免费额度；实际频率限制以其服务为准。两个渠道的 API Key 分开保存在本机 Keychain。"
+        switch provider {
+        case .agnes:
+            return "Agnes 提供免费额度；实际频率限制以其服务为准。各渠道的 API Key 分开保存在本机 Keychain。"
+        case .deepSeek:
+            return "DeepSeek 使用官方 API，可能产生费用；默认使用 deepseek-v4-flash。API Key 只保存在本机 Keychain。"
+        case .glm:
+            return "GLM 使用智谱开放平台的官方兼容 API；默认使用 glm-4.5-flash。API Key 只保存在本机 Keychain。"
         }
-        return "DeepSeek 使用官方 API，可能产生费用；默认使用 deepseek-v4-flash。API Key 只保存在本机 Keychain。"
     }
 
     private func loadProviderValues() {

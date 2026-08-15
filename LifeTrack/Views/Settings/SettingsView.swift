@@ -107,7 +107,7 @@ struct SettingsView: View {
                     } label: {
                         Label("AI 管家", systemImage: "sparkles")
                     }
-                    Text("可切换 Agnes 或 DeepSeek，支持连续问答与旅行整理。AI 不会收到照片图像、人物信息或资产标识；单独授权照片地点后可收到精确坐标。")
+                    Text("可切换 Agnes、DeepSeek 或 GLM，支持连续问答与旅行整理。AI 不会收到照片图像、人物信息或资产标识；单独授权照片地点后可收到精确坐标。")
                         .font(.footnote)
                 }
                 Section("关于与帮助") {

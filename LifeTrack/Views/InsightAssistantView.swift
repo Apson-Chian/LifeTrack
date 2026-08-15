@@ -62,7 +62,7 @@ struct InsightAssistantView: View {
         .alert("需要配置 AI", isPresented: $configurationNeeded) {
             Button("好", role: .cancel) { }
         } message: {
-            Text("请先在“设置 → AI 管家”中启用并配置 Agnes 或 DeepSeek。")
+            Text("请先在“设置 → AI 管家”中启用并配置 Agnes、DeepSeek 或 GLM。")
         }
     }
 
@@ -289,7 +289,7 @@ private struct InsightRow: View {
                 Image(systemName: insight.kind.symbol).foregroundStyle(.tint)
                 Text(insight.title).font(.subheadline.weight(.semibold)).lineLimit(2)
                 Spacer()
-                Text(insight.source == AIProvider.deepSeek.rawValue ? "DeepSeek" : "Agnes")
+                Text(AIProvider(rawValue: insight.source)?.displayName ?? insight.source)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -385,7 +385,7 @@ private struct InsightKindDetailView: View {
         .alert("需要配置 AI", isPresented: $configurationNeeded) {
             Button("好", role: .cancel) { }
         } message: {
-            Text("请先在“设置 → AI 管家”中启用并配置 Agnes 或 DeepSeek。")
+            Text("请先在“设置 → AI 管家”中启用并配置 Agnes、DeepSeek 或 GLM。")
         }
     }
 

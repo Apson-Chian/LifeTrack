@@ -6,6 +6,7 @@ struct PlaceRadiusEditorMap: UIViewRepresentable {
     @Binding var radius: Double
     @Binding var boundaryVertices: [CLLocationCoordinate2D]
     @Binding var isDrawingBoundary: Bool
+    @Binding var isBoundaryClosed: Bool
 
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView()
@@ -38,11 +39,13 @@ struct PlaceRadiusEditorMap: UIViewRepresentable {
 
         map.removeOverlays(map.overlays)
         map.removeAnnotations(map.annotations.filter { $0 is BoundaryVertexAnnotation })
-        if boundaryVertices.count >= 3 {
+        if isBoundaryClosed, boundaryVertices.count >= 3 {
             var vertices = boundaryVertices
             map.addOverlay(MKPolygon(coordinates: &vertices, count: vertices.count))
         } else {
-            map.addOverlay(MKCircle(center: coordinate, radius: radius))
+            if !isDrawingBoundary {
+                map.addOverlay(MKCircle(center: coordinate, radius: radius))
+            }
         }
         for (index, vertex) in boundaryVertices.enumerated() {
             map.addAnnotation(BoundaryVertexAnnotation(coordinate: vertex, index: index))
@@ -87,6 +90,7 @@ struct PlaceRadiusEditorMap: UIViewRepresentable {
             parent.boundaryVertices.append(
                 map.convert(recognizer.location(in: map), toCoordinateFrom: map)
             )
+            parent.isBoundaryClosed = false
         }
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {

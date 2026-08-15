@@ -31,6 +31,7 @@ struct PlaceEditorView: View {
     @State private var areaType: PlaceAreaType = .ordinary
     @State private var boundaryVertices: [CLLocationCoordinate2D] = []
     @State private var isDrawingBoundary = false
+    @State private var isBoundaryClosed = false
     @State private var didLoadGeofence = false
     @State private var isLoadingAddress = false
     @State private var saveError: String?
@@ -62,7 +63,8 @@ struct PlaceEditorView: View {
                     PlaceRadiusEditorMap(coordinate: $selectedCoordinate,
                                          radius: $radius,
                                          boundaryVertices: $boundaryVertices,
-                                         isDrawingBoundary: $isDrawingBoundary)
+                                         isDrawingBoundary: $isDrawingBoundary,
+                                         isBoundaryClosed: $isBoundaryClosed)
                         .frame(height: 260)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
@@ -72,21 +74,38 @@ struct PlaceEditorView: View {
                     }
                     .pickerStyle(.segmented)
                     .onChange(of: isDrawingBoundary) { _, drawing in
-                        if !drawing { boundaryVertices.removeAll() }
+                        if !drawing {
+                            boundaryVertices.removeAll()
+                            isBoundaryClosed = false
+                        }
                     }
                     if isDrawingBoundary {
                         HStack {
-                            Button("撤销上一点") { _ = boundaryVertices.popLast() }
+                            Button("撤销上一点") {
+                                _ = boundaryVertices.popLast()
+                                isBoundaryClosed = false
+                            }
                                 .disabled(boundaryVertices.isEmpty)
                             Spacer()
-                            Button("清空", role: .destructive) { boundaryVertices.removeAll() }
+                            Button("清空", role: .destructive) {
+                                boundaryVertices.removeAll()
+                                isBoundaryClosed = false
+                            }
                                 .disabled(boundaryVertices.isEmpty)
                         }
-                        Text(boundaryVertices.count < 3
-                             ? "依次轻点地图添加至少 3 个边界点（当前 \(boundaryVertices.count) 个）。"
-                             : "已形成手绘区域；继续轻点可细化边界。")
+                        Button {
+                            isBoundaryClosed = true
+                        } label: {
+                            Label(isBoundaryClosed ? "边界已连接并闭合" : "按选点顺序连接并闭合",
+                                  systemImage: isBoundaryClosed ? "checkmark.circle.fill" : "link")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(boundaryVertices.count < 3 || isBoundaryClosed)
+
+                        Text(boundaryInstruction)
                             .font(.caption)
-                            .foregroundStyle(boundaryVertices.count < 3 ? Color.orange : Color.secondary)
+                            .foregroundStyle(isBoundaryClosed ? Color.secondary : Color.orange)
                     } else {
                         Text("长按地图或拖动标记可调整中心，蓝色范围圆就是自动打卡区域。")
                             .font(.caption)
@@ -157,8 +176,10 @@ struct PlaceEditorView: View {
     }
 
     private func save() {
-        if isDrawingBoundary && boundaryVertices.count < 3 {
-            saveError = "手绘区域至少需要 3 个边界点。"
+        if isDrawingBoundary && (boundaryVertices.count < 3 || !isBoundaryClosed) {
+            saveError = boundaryVertices.count < 3
+                ? "手绘区域至少需要 3 个边界点。"
+                : "请先点击“按选点顺序连接并闭合”。"
             return
         }
         let savedPlace: CustomPlace
@@ -215,6 +236,7 @@ struct PlaceEditorView: View {
         areaType = geofence.areaType
         boundaryVertices = geofence.vertices
         isDrawingBoundary = boundaryVertices.count >= 3
+        isBoundaryClosed = boundaryVertices.count >= 3
     }
 
     private func saveGeofence(for placeID: UUID) {
@@ -230,6 +252,16 @@ struct PlaceEditorView: View {
     private var saveErrorPresented: Binding<Bool> {
         Binding(get: { saveError != nil },
                 set: { if !$0 { saveError = nil } })
+    }
+
+    private var boundaryInstruction: String {
+        if boundaryVertices.count < 3 {
+            return "先在地图上选择至少 3 个边界点（当前 \(boundaryVertices.count) 个），选点阶段不会自动连线。"
+        }
+        if isBoundaryClosed {
+            return "已按选点顺序连接最后一点与第一点；区域现在可以保存。"
+        }
+        return "边界点已选好。确认顺序后，手动点击上方按钮连接并闭合区域。"
     }
 }
 

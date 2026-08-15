@@ -405,6 +405,9 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertEqual(AIProvider.deepSeek.baseURL, "https://api.deepseek.com")
         XCTAssertEqual(AIProvider.deepSeek.defaultModel, "deepseek-v4-flash")
         XCTAssertTrue(AIProvider.deepSeek.availableModels.contains("deepseek-v4-pro"))
+        XCTAssertEqual(AIProvider.glm.baseURL, "https://open.bigmodel.cn/api/paas/v4")
+        XCTAssertEqual(AIProvider.glm.defaultModel, "glm-4.5-flash")
+        XCTAssertTrue(AIProvider.glm.availableModels.contains("glm-4.5-air"))
     }
 
     func testAssistantDisplayTextRemovesMarkdownNoise() {
