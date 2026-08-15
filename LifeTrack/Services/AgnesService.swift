@@ -1,24 +1,57 @@
 import Foundation
 
 // MARK: - 隐私红线
-// OpenAI Chat Completions 兼容的纯文本客户端。无论选择 Agnes 或 DeepSeek，
-// 请求结构都不存在图片分支；照片只能由 PhotoAIPrivacyFilter 在本机聚合、脱敏。
+// OpenAI Chat Completions 兼容的纯文本客户端。无论选择 Agnes、DeepSeek 或 GLM，
+// 请求结构都不存在图片分支；照片只能由 PhotoAIPrivacyFilter 输出时间、用户授权的地点/坐标、
+// 轨迹关联和安全主题等纯文字元数据。
 
 enum AIProvider: String, CaseIterable, Identifiable {
     case agnes
     case deepSeek = "deepseek"
+    case glm
 
     var id: String { rawValue }
-    var displayName: String { self == .agnes ? "Agnes" : "DeepSeek" }
-    var baseURL: String { self == .agnes ? "https://apihub.agnes-ai.com/v1" : "https://api.deepseek.com" }
-    var defaultModel: String { self == .agnes ? "agnes-2.5-flash" : "deepseek-v4-flash" }
+    var displayName: String {
+        switch self {
+        case .agnes: "Agnes"
+        case .deepSeek: "DeepSeek"
+        case .glm: "GLM"
+        }
+    }
+    var baseURL: String {
+        switch self {
+        case .agnes: "https://apihub.agnes-ai.com/v1"
+        case .deepSeek: "https://api.deepseek.com"
+        case .glm: "https://open.bigmodel.cn/api/paas/v4"
+        }
+    }
+    var defaultModel: String {
+        switch self {
+        case .agnes: "agnes-2.5-flash"
+        case .deepSeek: "deepseek-v4-flash"
+        case .glm: "glm-4.5-flash"
+        }
+    }
     var availableModels: [String] {
-        self == .agnes
-            ? ["agnes-2.5-flash", "agnes-2.0-flash"]
-            : ["deepseek-v4-flash", "deepseek-v4-pro"]
+        switch self {
+        case .agnes: ["agnes-2.5-flash", "agnes-2.0-flash"]
+        case .deepSeek: ["deepseek-v4-flash", "deepseek-v4-pro"]
+        case .glm: ["glm-4.5-flash", "glm-4.5-air", "glm-4.5"]
+        }
     }
     var website: URL {
-        URL(string: self == .agnes ? "https://agnes-ai.com" : "https://platform.deepseek.com")!
+        switch self {
+        case .agnes: URL(string: "https://agnes-ai.com")!
+        case .deepSeek: URL(string: "https://platform.deepseek.com")!
+        case .glm: URL(string: "https://open.bigmodel.cn")!
+        }
+    }
+    var interfaceHost: String {
+        switch self {
+        case .agnes: "apihub.agnes-ai.com"
+        case .deepSeek: "api.deepseek.com"
+        case .glm: "open.bigmodel.cn"
+        }
     }
 }
 
@@ -32,6 +65,7 @@ struct AIProviderConfiguration: Sendable {
 enum AISettings {
     private static let enabledKey = "ai.enabled"
     private static let providerKey = "ai.provider"
+    private static let sharesPhotoLocationKey = "ai.sharesPhotoLocation"
 
     static var isEnabled: Bool {
         if UserDefaults.standard.object(forKey: enabledKey) == nil {
@@ -48,6 +82,15 @@ enum AISettings {
 
     static func setSelectedProvider(_ provider: AIProvider) {
         UserDefaults.standard.set(provider.rawValue, forKey: providerKey)
+    }
+
+    /// Separate, explicit consent: enabling the assistant never implicitly shares photo places.
+    static var sharesPhotoLocation: Bool {
+        UserDefaults.standard.bool(forKey: sharesPhotoLocationKey)
+    }
+
+    static func setSharesPhotoLocation(_ allowed: Bool) {
+        UserDefaults.standard.set(allowed, forKey: sharesPhotoLocationKey)
     }
 
     static func model(for provider: AIProvider) -> String {
@@ -157,6 +200,7 @@ enum AgnesError: LocalizedError {
     case invalidResponse
     case http(provider: String, status: Int, detail: String)
     case unexpectedToolCall
+    case timedOut
 
     var errorDescription: String? {
         switch self {
@@ -166,11 +210,12 @@ enum AgnesError: LocalizedError {
         case let .http(provider, status, detail):
             "\(provider) 请求失败（HTTP \(status)）：\(detail.prefix(200))"
         case .unexpectedToolCall: "模型在未提供工具时返回了工具调用。"
+        case .timedOut: "AI 请求超时，已自动停止。请重试，或缩小查询范围。"
         }
     }
 }
 
-/// 保留原类型名以兼容现有代码；实际支持 Agnes 与 DeepSeek。
+/// 保留原类型名以兼容现有代码；实际支持 Agnes、DeepSeek 与 GLM。
 struct AgnesClient {
     static let shared = AgnesClient()
     private let session: URLSession
@@ -190,7 +235,8 @@ struct AgnesClient {
 
     func completeWithTools(messages: [AgnesWireMessage],
                            tools: [AgnesTool],
-                           configuration supplied: AIProviderConfiguration? = nil) async throws -> AgnesOutcome {
+                           configuration supplied: AIProviderConfiguration? = nil,
+                           requestTimeout: TimeInterval = 25) async throws -> AgnesOutcome {
         guard let configuration = supplied ?? AISettings.activeConfiguration else {
             throw AgnesError.notConfigured
         }
@@ -212,13 +258,19 @@ struct AgnesClient {
 
         let base = configuration.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: base + "/chat/completions") else { throw AgnesError.invalidResponse }
-        var request = URLRequest(url: url, timeoutInterval: 120)
+        var request = URLRequest(url: url, timeoutInterval: max(1, requestTimeout))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch let error as URLError where error.code == .timedOut {
+            throw AgnesError.timedOut
+        }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw AgnesError.http(provider: configuration.provider.displayName,
                                   status: http.statusCode,

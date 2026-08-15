@@ -290,6 +290,7 @@ private struct JourneyDetailView: View {
     let journey: JourneyRecord
     let sessions: [ActivitySession]
     @Query private var places: [CustomPlace]
+    @State private var placeDraft: PlaceDraft?
 
     private var orderedSessions: [ActivitySession] {
         sessions.sorted { $0.startTime < $1.startTime }
@@ -306,10 +307,13 @@ private struct JourneyDetailView: View {
         ScrollView {
             VStack(spacing: 16) {
                 if !mapPoints.isEmpty {
-                    TrackMapView(points: mapPoints, places: places, currentLocation: nil) { _ in }
+                    TrackMapView(points: mapPoints, places: places, currentLocation: nil) { coordinate in
+                        placeDraft = PlaceDraft(coordinate: coordinate)
+                    }
                         .frame(height: 290)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .overlay(alignment: .bottomLeading) { TrackSpeedLegend().padding(10) }
+                        .overlay(alignment: .bottomTrailing) { MapAddPlaceHint().padding(10) }
                         .padding(.horizontal)
                 }
 
@@ -353,6 +357,9 @@ private struct JourneyDetailView: View {
         }
         .navigationTitle(routeTitle)
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $placeDraft) { draft in
+            PlaceEditorView(coordinate: draft.coordinate)
+        }
     }
 
     private var routeTitle: String {
@@ -371,6 +378,7 @@ struct SessionDetailView: View {
     @State private var photoDescriptors: [PhotoLibraryAssetDescriptor] = []
     @State private var photoAuthorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @State private var selectedPhoto: PhotoDetailItem?
+    @State private var placeDraft: PlaceDraft?
 
     private var mapPoints: [TrackMapPoint] {
         session.trackPoints.sorted { $0.timestamp < $1.timestamp }.map(TrackMapPoint.init).downsampledForMap()
@@ -401,10 +409,13 @@ struct SessionDetailView: View {
                              currentLocation: nil,
                              photoMoments: photoMoments,
                              onPhotoTap: showPhoto,
-                             onLongPress: { _ in })
+                             onLongPress: { coordinate in
+                                 placeDraft = PlaceDraft(coordinate: coordinate)
+                             })
                     .frame(height: 290)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(alignment: .bottomLeading) { TrackSpeedLegend().padding(10) }
+                    .overlay(alignment: .bottomTrailing) { MapAddPlaceHint().padding(10) }
                 Grid(horizontalSpacing: 10, verticalSpacing: 10) {
                     GridRow {
                         StatisticTile(title: "距离", value: Formatters.distance(session.distance), symbol: "arrow.left.and.right")
@@ -428,6 +439,9 @@ struct SessionDetailView: View {
             .padding(.vertical)
         }
         .navigationTitle(session.activityType.displayName)
+        .sheet(item: $placeDraft) { draft in
+            PlaceEditorView(coordinate: draft.coordinate)
+        }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -663,5 +677,15 @@ struct SessionDetailView: View {
     private var exportErrorPresented: Binding<Bool> {
         Binding(get: { exportError != nil },
                 set: { if !$0 { exportError = nil } })
+    }
+}
+
+private struct MapAddPlaceHint: View {
+    var body: some View {
+        Label("长按添加地点", systemImage: "mappin.badge.plus")
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(.ultraThinMaterial, in: Capsule())
     }
 }

@@ -64,8 +64,7 @@ struct TodayView: View {
                     Menu {
                         Button { showDestinationSearch = true } label: { Label("高德导航", systemImage: "location.north.line") }
                         Button {
-                            guard let coordinate = locationService.currentLocation?.coordinate else { return }
-                            placeDraft = PlaceDraft(coordinate: coordinate)
+                            markCurrentLocation()
                         } label: { Label("标记当前位置", systemImage: "mappin.circle.fill") }
                     } label: { Image(systemName: "plus") }
                 }

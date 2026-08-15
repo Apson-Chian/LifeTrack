@@ -5,6 +5,7 @@ import MapKit
 struct CampusDashboardView: View {
     @Query(sort: \CustomPlace.shortName) private var allPlaces: [CustomPlace]
     @Query(sort: \StayRecord.arrivalTime, order: .reverse) private var allStays: [StayRecord]
+    @Query private var geofences: [PlaceGeofence]
     @State private var scope: CampusSummaryScope = .semester
 
     private var campusPlaces: [CustomPlace] {
@@ -25,7 +26,7 @@ struct CampusDashboardView: View {
                     .padding()
             } else {
                 VStack(alignment: .leading, spacing: 18) {
-                    CampusOverviewMap(places: campusPlaces)
+                    CampusOverviewMap(places: campusPlaces, geofences: geofences)
                         .frame(height: 290)
                         .clipShape(RoundedRectangle(cornerRadius: 18))
 
@@ -418,6 +419,7 @@ struct CampusAchievement: Identifiable {
 
 private struct CampusOverviewMap: UIViewRepresentable {
     let places: [CustomPlace]
+    let geofences: [PlaceGeofence]
 
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView()
@@ -432,10 +434,15 @@ private struct CampusOverviewMap: UIViewRepresentable {
         map.removeAnnotations(map.annotations.filter { !($0 is MKUserLocation) })
         map.removeOverlays(map.overlays)
 
+        let geofenceByPlaceID = Dictionary(uniqueKeysWithValues: geofences.map { ($0.placeID, $0) })
         for place in places {
             let annotation = CampusPlaceAnnotation(place: place)
             map.addAnnotation(annotation)
-            map.addOverlay(MKCircle(center: annotation.coordinate, radius: place.radius))
+            if var vertices = geofenceByPlaceID[place.id]?.vertices, vertices.count >= 3 {
+                map.addOverlay(MKPolygon(coordinates: &vertices, count: vertices.count))
+            } else {
+                map.addOverlay(MKCircle(center: annotation.coordinate, radius: place.radius))
+            }
         }
 
         let signature = places.map { "\($0.id):\($0.latitude):\($0.longitude):\($0.radius)" }.joined(separator: "|")
@@ -455,8 +462,14 @@ private struct CampusOverviewMap: UIViewRepresentable {
         var lastSignature: String?
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
-            guard let circle = overlay as? MKCircle else { return MKOverlayRenderer(overlay: overlay) }
-            let renderer = MKCircleRenderer(circle: circle)
+            let renderer: MKOverlayPathRenderer
+            if let circle = overlay as? MKCircle {
+                renderer = MKCircleRenderer(circle: circle)
+            } else if let polygon = overlay as? MKPolygon {
+                renderer = MKPolygonRenderer(polygon: polygon)
+            } else {
+                return MKOverlayRenderer(overlay: overlay)
+            }
             renderer.strokeColor = .systemIndigo
             renderer.fillColor = UIColor.systemIndigo.withAlphaComponent(0.12)
             renderer.lineWidth = 1.5

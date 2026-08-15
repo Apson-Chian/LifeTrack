@@ -47,6 +47,7 @@ extension PhotoLibraryChangeMonitor: PHPhotoLibraryChangeObserver {
 enum PhotoLibraryScanCache {
     private static let lock = NSLock()
     private static var cachedGeneration: Int?
+    private static var cachedAuthorizationRawValue: Int?
     private static var cachedDescriptors: [PhotoLibraryAssetDescriptor]?
 
     /// 返回当前代次的描述符。若库未变化则复用缓存，否则重新扫描。
@@ -54,12 +55,18 @@ enum PhotoLibraryScanCache {
         lock.lock()
         defer { lock.unlock() }
 
-        if let cachedGeneration, cachedGeneration == currentGeneration, let cachedDescriptors {
+        let authorizationRawValue = PHPhotoLibrary.authorizationStatus(for: .readWrite).rawValue
+
+        if let cachedGeneration,
+           cachedGeneration == currentGeneration,
+           cachedAuthorizationRawValue == authorizationRawValue,
+           let cachedDescriptors {
             return cachedDescriptors
         }
 
         let descriptors = PhotoLibraryScanner.descriptors()
         cachedGeneration = currentGeneration
+        cachedAuthorizationRawValue = authorizationRawValue
         cachedDescriptors = descriptors
         return descriptors
     }
@@ -68,6 +75,7 @@ enum PhotoLibraryScanCache {
     static func invalidate() {
         lock.lock()
         cachedGeneration = nil
+        cachedAuthorizationRawValue = nil
         cachedDescriptors = nil
         lock.unlock()
     }

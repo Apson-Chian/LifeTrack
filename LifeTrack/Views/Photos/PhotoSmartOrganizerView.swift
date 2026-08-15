@@ -17,6 +17,7 @@ struct PhotoSmartOrganizerView: View {
     @State private var analysisTask: Task<Void, Never>?
     @State private var statusMessage: String?
     @State private var isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
+    @State private var analysisPerformance = PhotoAnalysisPerformance.selected
 
     private var progress: Double {
         guard totalInCurrentRun > 0 else { return 0 }
@@ -72,7 +73,7 @@ struct PhotoSmartOrganizerView: View {
             HStack {
                 Image(systemName: "lock.shield.fill")
                     .font(.title2)
-                Text("全程在设备上完成")
+                Text("图像分类在设备上完成")
                     .font(.headline)
                 Spacer()
                 Text("Vision")
@@ -81,7 +82,7 @@ struct PhotoSmartOrganizerView: View {
                     .padding(.vertical, 5)
                     .background(.white.opacity(0.16), in: Capsule())
             }
-            Text("只向 Apple Vision 提供 384px 缩略图，不上传分析数据，不把原图交给分析器。每张成功分类的照片只分析一次。")
+            Text("只向 Apple Vision 提供 384px 缩略图，并默认以低负载后台队列逐张处理。云端 AI 负责文字问答和已授权的位置推理；当前不会把缩略图或原图上传到云端。")
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.9))
                 .fixedSize(horizontal: false, vertical: true)
@@ -126,6 +127,19 @@ struct PhotoSmartOrganizerView: View {
                     .font(.caption.weight(.semibold))
                 }
             } else {
+                Picker("处理负载", selection: $analysisPerformance) {
+                    ForEach(PhotoAnalysisPerformance.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: analysisPerformance) { _, mode in
+                    PhotoAnalysisPerformance.setSelected(mode)
+                }
+                Text(analysisPerformance.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 Button {
                     startAnalysis(snapshot.descriptorsForNextRun)
                 } label: {
@@ -433,8 +447,8 @@ struct PhotoSmartOrganizerView: View {
 
                 if completedInCurrentRun % 10 == 0 {
                     PersistenceService.save(modelContext, operation: "保存照片分析缓存")
-                    await yieldForEnergyAndThermals()
                 }
+                await yieldForEnergyAndThermals()
             }
 
             PersistenceService.save(modelContext, operation: "完成照片分析缓存")
@@ -450,13 +464,13 @@ struct PhotoSmartOrganizerView: View {
     private func yieldForEnergyAndThermals() async {
         switch ProcessInfo.processInfo.thermalState {
         case .serious, .critical:
-            try? await Task.sleep(nanoseconds: 800_000_000)
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
         case .fair:
-            try? await Task.sleep(nanoseconds: 180_000_000)
+            try? await Task.sleep(nanoseconds: 700_000_000)
         case .nominal:
-            await Task.yield()
+            try? await Task.sleep(nanoseconds: analysisPerformance.nominalPauseNanoseconds)
         @unknown default:
-            await Task.yield()
+            try? await Task.sleep(nanoseconds: analysisPerformance.nominalPauseNanoseconds)
         }
     }
 }

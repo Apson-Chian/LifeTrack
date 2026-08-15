@@ -98,7 +98,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Section("照片隐私") {
-                    Text("照片内容仅在设备本地进行分析；如果照片仅存储在 iCloud，系统可能从 iCloud 下载缩略图用于本地分析。LifeTrack 不会把原图上传到第三方服务器。")
+                    Text("照片内容分类默认使用低负载后台队列在设备本地完成；云端 AI 处理文字和已授权的位置数据，不接收照片缩略图或原图。")
                         .font(.footnote)
                 }
                 Section("AI 助手") {
@@ -107,7 +107,7 @@ struct SettingsView: View {
                     } label: {
                         Label("AI 管家", systemImage: "sparkles")
                     }
-                    Text("可切换 Agnes 或 DeepSeek，支持整个 App 的连续问答、后台生成与旅行整理。AI 了解你的记录，但不会收到照片图像、人物信息、坐标或单张照片详情。")
+                    Text("可切换 Agnes、DeepSeek 或 GLM，支持连续问答与旅行整理。AI 不会收到照片图像、人物信息或资产标识；单独授权照片地点后可收到精确坐标。")
                         .font(.footnote)
                 }
                 Section("关于与帮助") {

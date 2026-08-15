@@ -393,6 +393,11 @@ final class ReliabilityTests: XCTestCase {
             "get_travel_candidates",
             "get_sanitized_photo_summary"
         ])
+        let photoTool = LifeAgentService.tools.first { $0.name == "get_sanitized_photo_summary" }
+        let properties = photoTool?.parameters["properties"] as? [String: Any]
+        XCTAssertNotNil(properties?["start_date"])
+        XCTAssertNotNil(properties?["end_date"])
+        XCTAssertNotNil(properties?["location_query"])
     }
 
     func testAIProvidersUseFixedOfficialTextEndpoints() {
@@ -400,6 +405,9 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertEqual(AIProvider.deepSeek.baseURL, "https://api.deepseek.com")
         XCTAssertEqual(AIProvider.deepSeek.defaultModel, "deepseek-v4-flash")
         XCTAssertTrue(AIProvider.deepSeek.availableModels.contains("deepseek-v4-pro"))
+        XCTAssertEqual(AIProvider.glm.baseURL, "https://open.bigmodel.cn/api/paas/v4")
+        XCTAssertEqual(AIProvider.glm.defaultModel, "glm-4.5-flash")
+        XCTAssertTrue(AIProvider.glm.availableModels.contains("glm-4.5-air"))
     }
 
     func testAssistantDisplayTextRemovesMarkdownNoise() {
@@ -543,6 +551,32 @@ final class ReliabilityTests: XCTestCase {
             coordinate: remote, routineAnchors: [home], groupPhotoCount: 1))
     }
 
+    func testRoutineAnchorsCanBeInferredFromRecurringHistoricalMetadata() {
+        let base = Date(timeIntervalSince1970: 1_650_000_000)
+        var samples: [HistoricalRoutineLocationSample] = []
+        for day in 0..<12 {
+            samples.append(HistoricalRoutineLocationSample(
+                coordinate: CLLocationCoordinate2D(latitude: 31.20 + Double(day % 2) * 0.001,
+                                                    longitude: 121.40),
+                date: base.addingTimeInterval(Double(day) * 86_400)
+            ))
+        }
+        for day in 0..<2 {
+            samples.append(HistoricalRoutineLocationSample(
+                coordinate: CLLocationCoordinate2D(latitude: 39.90, longitude: 116.40),
+                date: base.addingTimeInterval(Double(day) * 86_400)
+            ))
+        }
+
+        let anchors = TravelTimelineGenerationService.inferredRoutineAnchors(samples: samples)
+
+        XCTAssertEqual(anchors.count, 1)
+        let inferredLocation = CLLocation(latitude: anchors[0].latitude, longitude: anchors[0].longitude)
+        let expectedLocation = CLLocation(latitude: 31.20, longitude: 121.40)
+        XCTAssertLessThan(inferredLocation.distance(from: expectedLocation),
+                          2_000)
+    }
+
     func testTimelineCacheRebuildNeverDeletesHistoricalTripsMissingFromCurrentDrafts() async throws {
         let container = try makeContainer()
         let context = container.mainContext
@@ -562,7 +596,7 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertEqual(trips.map(\.stableKey), ["photo:historical"])
     }
 
-    func testPhotoAIPrivacyFilterRemovesSensitiveData() {
+    func testPhotoAIPrivacyFilterSharesMetadataWithoutImageOrExactGPS() {
         let record = PhotoAnalysisRecord(
             assetIdentifier: "secret-asset-id",
             creationDate: Date(timeIntervalSince1970: 1_700_000_000),
@@ -575,8 +609,17 @@ final class ReliabilityTests: XCTestCase {
             state: .completed,
             linkedSessionID: UUID()
         )
+        let school = CustomPlace(shortName: "学校",
+                                 latitude: 31.2346,
+                                 longitude: 121.4568,
+                                 radius: 500,
+                                 category: .study)
 
-        let summary = PhotoAIPrivacyFilter.summary(records: [record], days: 30)
+        let summary = PhotoAIPrivacyFilter.summary(records: [record], days: 30, places: [school])
+        XCTAssertTrue(summary.contains("学校"))
+        XCTAssertTrue(summary.contains("年"))
+        XCTAssertTrue(summary.contains("完整逐日索引"))
+        XCTAssertTrue(summary.contains("逐张元数据"))
         XCTAssertTrue(summary.contains("风景"))
         XCTAssertTrue(summary.contains("mountain"))
         XCTAssertTrue(summary.contains("beach"))
@@ -585,10 +628,36 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertFalse(summary.contains("person"))
         XCTAssertFalse(summary.contains("passport"))
         XCTAssertFalse(summary.contains("secret-asset-id"))
-        XCTAssertFalse(summary.contains("31.234567"))
-        XCTAssertFalse(summary.contains("121.456789"))
+        XCTAssertTrue(summary.contains("31.234567"))
+        XCTAssertTrue(summary.contains("121.456789"))
         XCTAssertFalse(summary.contains("1700000000"))
         XCTAssertFalse(summary.contains("3 张脸"))
+        XCTAssertFalse(summary.contains("image_url"))
+        XCTAssertFalse(summary.contains("base64"))
+    }
+
+    func testPhotoMetadataDailyIndexIncludesOldDatesBeyondDetailLimit() {
+        let calendar = Calendar(identifier: .gregorian)
+        let march = calendar.date(from: DateComponents(year: 2026, month: 3, day: 28, hour: 10))!
+        let april = calendar.date(from: DateComponents(year: 2026, month: 4, day: 1, hour: 11))!
+        let records = [march, april].enumerated().map { index, date in
+            PhotoAnalysisRecord(assetIdentifier: "photo-\(index)",
+                                creationDate: date,
+                                categories: [.landscape],
+                                topLabels: [],
+                                confidence: 0.8,
+                                faceCount: 0,
+                                state: .completed)
+        }
+
+        let summary = PhotoAIPrivacyFilter.summary(records: records,
+                                                   days: 20,
+                                                   rangeDescription: "2026-03-20 至 2026-04-05",
+                                                   detailLimit: 1)
+
+        XCTAssertTrue(summary.contains("2026-03-28：1 张"))
+        XCTAssertTrue(summary.contains("2026-04-01：1 张"))
+        XCTAssertTrue(summary.contains("已经计入上方完整逐日索引"))
     }
 
     func testAgnesWireMessageHasNoImageContentBranch() {
@@ -597,6 +666,39 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertNil(dictionary["image_url"])
         XCTAssertNil(dictionary["image"])
         XCTAssertFalse(String(describing: dictionary).contains("base64"))
+    }
+
+    func testHandDrawnGeofenceUsesPolygonInsteadOfRadius() {
+        let place = CustomPlace(shortName: "图书馆",
+                                latitude: 31.0,
+                                longitude: 121.0,
+                                radius: 20)
+        let geofence = PlaceGeofence(
+            placeID: place.id,
+            areaType: .library,
+            vertices: [
+                .init(latitude: 30.999, longitude: 120.999),
+                .init(latitude: 30.999, longitude: 121.002),
+                .init(latitude: 31.002, longitude: 121.002),
+                .init(latitude: 31.002, longitude: 120.999)
+            ]
+        )
+        let service = PlaceRecognitionService()
+
+        let insidePolygonOutsideCircle = CLLocation(latitude: 31.0015, longitude: 121.0015)
+        XCTAssertEqual(service.matchingPlace(for: insidePolygonOutsideCircle,
+                                             places: [place],
+                                             geofences: [place.id: geofence])?.id,
+                       place.id)
+        XCTAssertFalse(service.hasExited(place,
+                                         location: insidePolygonOutsideCircle,
+                                         geofence: geofence))
+
+        let outside = CLLocation(latitude: 31.003, longitude: 121.003)
+        XCTAssertNil(service.matchingPlace(for: outside,
+                                           places: [place],
+                                           geofences: [place.id: geofence]))
+        XCTAssertTrue(service.hasExited(place, location: outside, geofence: geofence))
     }
 
     func testAgentSchemaMigratesFromV3ToV4() throws {
@@ -632,7 +734,7 @@ final class ReliabilityTests: XCTestCase {
     }
 
     private func makeContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: LifeTrackSchemaV4.self)
+        let schema = Schema(versionedSchema: LifeTrackSchemaV5.self)
         let configuration = ModelConfiguration(schema: schema,
                                                isStoredInMemoryOnly: true,
                                                cloudKitDatabase: .none)
@@ -644,7 +746,7 @@ final class ReliabilityTests: XCTestCase {
     private func withReadOnlyContainer<T>(_ body: (ModelContainer) throws -> T) throws -> T {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("readonly-\(UUID().uuidString).store")
-        let schema = Schema(versionedSchema: LifeTrackSchemaV4.self)
+        let schema = Schema(versionedSchema: LifeTrackSchemaV5.self)
         var writable: ModelContainer? = try ModelContainer(
             for: schema,
             migrationPlan: LifeTrackMigrationPlan.self,

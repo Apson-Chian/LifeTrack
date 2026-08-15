@@ -13,6 +13,7 @@ struct PhotoTrackView: View {
     @State private var authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @State private var cameraRequest: MapCameraRequest?
     @State private var timelineScope: PhotoTimelineScope = .all
+    @State private var placeDraft: PlaceDraft?
 
     var body: some View {
         ScrollView {
@@ -47,6 +48,9 @@ struct PhotoTrackView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .lifeTrackPhotoLibraryDidChange)) { _ in
             Task { await loadPhotoLocations() }
+        }
+        .sheet(item: $placeDraft) { draft in
+            PlaceEditorView(coordinate: draft.coordinate)
         }
     }
 
@@ -119,9 +123,19 @@ struct PhotoTrackView: View {
                              places: [],
                              currentLocation: nil,
                              cameraRequest: cameraRequest,
-                             style: .photoDots) { _ in }
+                             style: .photoDots) { coordinate in
+                    placeDraft = PlaceDraft(coordinate: coordinate)
+                }
                 .frame(height: 460)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(alignment: .bottomTrailing) {
+                    Label("长按添加地点", systemImage: "mappin.badge.plus")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .padding(12)
+                }
                 .overlay(alignment: .topTrailing) {
                     Button {
                         cameraRequest = MapCameraRequest(target: .route)

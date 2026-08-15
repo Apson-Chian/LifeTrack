@@ -56,6 +56,7 @@ enum BackupService {
             sessions: try context.fetch(FetchDescriptor<ActivitySession>()).map(SessionBackup.init),
             trackPoints: try context.fetch(FetchDescriptor<TrackPoint>()).map(TrackPointBackup.init),
             places: try context.fetch(FetchDescriptor<CustomPlace>()).map(CustomPlaceBackup.init),
+            geofences: try context.fetch(FetchDescriptor<PlaceGeofence>()).map(PlaceGeofenceBackup.init),
             stays: try context.fetch(FetchDescriptor<StayRecord>()).map(StayRecordBackup.init),
             dailySummaries: try context.fetch(FetchDescriptor<DailySummary>()).map(DailySummaryBackup.init),
             photoRecords: try context.fetch(FetchDescriptor<PhotoAnalysisRecord>()).map(PhotoAnalysisBackup.init),
@@ -118,6 +119,7 @@ enum BackupService {
             try context.fetch(FetchDescriptor<ActivitySession>()).map { ($0.id, $0) })
         let existingPointIDs = Set(try context.fetch(FetchDescriptor<TrackPoint>()).map(\.id))
         let existingPlaceIDs = Set(try context.fetch(FetchDescriptor<CustomPlace>()).map(\.id))
+        let existingGeofencePlaceIDs = Set(try context.fetch(FetchDescriptor<PlaceGeofence>()).map(\.placeID))
         let existingStayIDs = Set(try context.fetch(FetchDescriptor<StayRecord>()).map(\.id))
         let existingDailyIDs = Set(try context.fetch(FetchDescriptor<DailySummary>()).map(\.id))
         let existingPhotoIDs = Set(try context.fetch(FetchDescriptor<PhotoAnalysisRecord>()).map(\.assetIdentifier))
@@ -140,6 +142,19 @@ enum BackupService {
             place.updatedAt = value.updatedAt
             context.insert(place)
             insertedPlaces += 1
+        }
+
+        for value in backup.geofences ?? [] where !existingGeofencePlaceIDs.contains(value.placeID) {
+            guard existingPlaceIDs.contains(value.placeID) || backup.places.contains(where: { $0.id == value.placeID }) else { continue }
+            let vertices = value.vertices.compactMap { pair -> CLLocationCoordinate2D? in
+                guard pair.count == 2 else { return nil }
+                let coordinate = CLLocationCoordinate2D(latitude: pair[0], longitude: pair[1])
+                return CLLocationCoordinate2DIsValid(coordinate) ? coordinate : nil
+            }
+            context.insert(PlaceGeofence(placeID: value.placeID,
+                                         areaType: PlaceAreaType(rawValue: value.areaTypeRawValue) ?? .ordinary,
+                                         vertices: vertices))
+            insertedOtherRecords += 1
         }
 
         for value in backup.sessions where sessionsByID[value.id] == nil {
@@ -363,6 +378,7 @@ enum BackupService {
         }
         let otherCount = backup.dailySummaries.count + backup.photoRecords.count +
             backup.timelineTrips.count + backup.timelineNodes.count +
+            (backup.geofences?.count ?? 0) +
             (backup.journeys?.count ?? 0) + (backup.travelArchives?.count ?? 0)
         guard otherCount <= maximumOtherRecordCount else {
             throw BackupServiceError.invalidFile("其他记录数量超过安全上限")
@@ -371,6 +387,7 @@ enum BackupService {
         try requireUnique(backup.sessions.map(\.id), name: "ActivitySession UUID")
         try requireUnique(backup.trackPoints.map(\.id), name: "TrackPoint UUID")
         try requireUnique(backup.places.map(\.id), name: "CustomPlace UUID")
+        try requireUnique((backup.geofences ?? []).map(\.placeID), name: "地点边界 Place UUID")
         try requireUnique(backup.stays.map(\.id), name: "StayRecord UUID")
         try requireUnique(backup.dailySummaries.map(\.id), name: "DailySummary UUID")
         try requireUnique(backup.photoRecords.map(\.assetIdentifier), name: "照片标识")
@@ -380,8 +397,24 @@ enum BackupService {
         try requireUnique((backup.travelArchives ?? []).map(\.id), name: "TravelArchive UUID")
 
         let sessionIDs = Set(backup.sessions.map(\.id))
+        let placeIDs = Set(backup.places.map(\.id))
         let stayIDs = Set(backup.stays.map(\.id))
         let tripIDs = Set(backup.timelineTrips.map(\.id))
+
+        for geofence in backup.geofences ?? [] {
+            guard placeIDs.contains(geofence.placeID) else {
+                throw BackupServiceError.invalidFile("地点边界关联了不存在的地点")
+            }
+            guard geofence.vertices.isEmpty || (3...1_000).contains(geofence.vertices.count) else {
+                throw BackupServiceError.invalidFile("手绘地点边界点数无效")
+            }
+            for pair in geofence.vertices {
+                guard pair.count == 2 else {
+                    throw BackupServiceError.invalidFile("手绘地点边界坐标格式无效")
+                }
+                try requireCoordinate(latitude: pair[0], longitude: pair[1], field: "手绘地点边界")
+            }
+        }
 
         for value in backup.sessions {
             try requireValidDate(value.startTime, field: "运动开始时间")
@@ -580,6 +613,7 @@ private struct LifeTrackBackup: Codable {
     let sessions: [SessionBackup]
     let trackPoints: [TrackPointBackup]
     let places: [CustomPlaceBackup]
+    let geofences: [PlaceGeofenceBackup]?
     let stays: [StayRecordBackup]
     let dailySummaries: [DailySummaryBackup]
     let photoRecords: [PhotoAnalysisBackup]
@@ -587,6 +621,18 @@ private struct LifeTrackBackup: Codable {
     let timelineNodes: [TimelineNodeBackup]
     let journeys: [JourneyBackup]?
     let travelArchives: [TravelArchiveBackup]?
+}
+
+private struct PlaceGeofenceBackup: Codable {
+    let placeID: UUID
+    let areaTypeRawValue: String
+    let vertices: [[Double]]
+
+    init(_ value: PlaceGeofence) {
+        placeID = value.placeID
+        areaTypeRawValue = value.areaTypeRawValue
+        vertices = value.vertices.map { [$0.latitude, $0.longitude] }
+    }
 }
 
 private struct SessionBackup: Codable {

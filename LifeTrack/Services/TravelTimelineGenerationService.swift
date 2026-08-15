@@ -7,18 +7,37 @@ struct TravelTimelineRefreshSummary {
     let tripCount: Int
     let updatedTripCount: Int
     let analyzedPhotoCount: Int
+    let scannedPhotoCount: Int
+    let locatedPhotoCount: Int
+    let routineAnchorCount: Int
+    let photoAccessLimited: Bool
+
+    init(tripCount: Int,
+         updatedTripCount: Int,
+         analyzedPhotoCount: Int,
+         scannedPhotoCount: Int = 0,
+         locatedPhotoCount: Int = 0,
+         routineAnchorCount: Int = 0,
+         photoAccessLimited: Bool = false) {
+        self.tripCount = tripCount
+        self.updatedTripCount = updatedTripCount
+        self.analyzedPhotoCount = analyzedPhotoCount
+        self.scannedPhotoCount = scannedPhotoCount
+        self.locatedPhotoCount = locatedPhotoCount
+        self.routineAnchorCount = routineAnchorCount
+        self.photoAccessLimited = photoAccessLimited
+    }
+}
+
+struct HistoricalRoutineLocationSample: Sendable {
+    let coordinate: CLLocationCoordinate2D
+    let date: Date
 }
 
 @MainActor
 enum TravelTimelineGenerationService {
-    /// 每次时间线刷新最多新分析的照片数，避免首次打开时串行分析整库照片而卡住。
-    private static let maximumPhotosPerTimelineRefresh = 40
-    private static let timelineSignatureKey = "travelTimelineLastSignature"
-
-    private static var lastSignature: String? {
-        get { UserDefaults.standard.string(forKey: timelineSignatureKey) }
-        set { UserDefaults.standard.set(newValue, forKey: timelineSignatureKey) }
-    }
+    /// 增量刷新时单次最多新分析的照片数，避免每次进入页面都长时占用；完整重建不限速。
+    private static let incrementalPhotoBudget = 80
 
     nonisolated static func isHistoricalPhotoTravelEvidence(coordinate: CLLocationCoordinate2D,
                                                             routineAnchors: [CLLocationCoordinate2D],
@@ -28,34 +47,98 @@ enum TravelTimelineGenerationService {
         return distance >= 50_000 && (groupPhotoCount >= 2 || distance >= 100_000)
     }
 
-    static func refresh(context: ModelContext,
-                        sessions: [ActivitySession]) async -> TravelTimelineRefreshSummary {
-        let signature = inputSignature(sessions: sessions, context: context)
-        let existingTripCount = (try? context.fetchCount(FetchDescriptor<TravelTimelineTrip>())) ?? 0
-
-        // 数据未变化时跳过照片分析与时间轴重建，只补解析缺失地名（无缺失时几乎零开销）。
-        if existingTripCount > 0, lastSignature == signature {
-            await resolveMissingPlaceNames(in: context)
-            return TravelTimelineRefreshSummary(tripCount: existingTripCount,
-                                                updatedTripCount: 0,
-                                                analyzedPhotoCount: 0)
+    /// 旧用户未维护“家/学校”时，用长期、跨多日反复出现的位置推断日常活动圈。
+    /// 只处理时间和坐标，不读取照片像素，也不会把任何照片交给 AI。
+    nonisolated static func inferredRoutineAnchors(samples: [HistoricalRoutineLocationSample]) -> [CLLocationCoordinate2D] {
+        struct Bucket {
+            var coordinates: [CLLocationCoordinate2D] = []
+            var days = Set<Int>()
         }
+        var buckets: [String: Bucket] = [:]
+        for sample in samples where CLLocationCoordinate2DIsValid(sample.coordinate) {
+            // 约 2 km 的桶足以覆盖住宅、学校附近的日常活动，同时不会吞并整座城市。
+            let key = "\(Int(floor(sample.coordinate.latitude * 50))):\(Int(floor(sample.coordinate.longitude * 50)))"
+            let day = Int(sample.date.timeIntervalSince1970 / 86_400)
+            buckets[key, default: Bucket()].coordinates.append(sample.coordinate)
+            buckets[key, default: Bucket()].days.insert(day)
+        }
+        let recurring = buckets.values
+            .filter { $0.days.count >= 3 }
+            .sorted {
+                if $0.days.count == $1.days.count { return $0.coordinates.count > $1.coordinates.count }
+                return $0.days.count > $1.days.count
+            }
+        guard let mostFrequent = recurring.first else { return [] }
+        let minimumDays = max(3, Int(ceil(Double(mostFrequent.days.count) * 0.25)))
+        return recurring
+            .filter { $0.days.count >= minimumDays }
+            .prefix(4)
+            .compactMap { bucket in
+                guard !bucket.coordinates.isEmpty else { return nil }
+                return CLLocationCoordinate2D(
+                    latitude: bucket.coordinates.map(\.latitude).reduce(0, +) / Double(bucket.coordinates.count),
+                    longitude: bucket.coordinates.map(\.longitude).reduce(0, +) / Double(bucket.coordinates.count)
+                )
+            }
+    }
 
-        let analyzedPhotoCount = await updatePhotoCache(context: context, sessions: sessions)
+    /// 完整重建活动行程：扫描全部未分析的照片（不限速），据 GPS 会话与照片缓存重建行程。
+    private static func buildActivityTrips(context: ModelContext,
+                                           sessions: [ActivitySession],
+                                           budget: Int?) async -> (analyzed: Int, updated: Int, trips: Int) {
+        let analyzedPhotoCount = await updatePhotoCache(context: context, sessions: sessions, budget: budget)
         let photoRecords = (try? context.fetch(FetchDescriptor<PhotoAnalysisRecord>())) ?? []
         let input = TimelineGenerationInput(sessions: sessions, photos: photoRecords)
         let drafts = await Task.detached(priority: .utility) {
             TravelTimelineDraftBuilder.build(input)
         }.value
-
         let updatedTripCount = reconcile(drafts: drafts, in: context)
         PersistenceService.save(context, operation: "保存旅行时间线")
-        await resolveMissingPlaceNames(in: context)
+        return (analyzedPhotoCount, updatedTripCount, drafts.count)
+    }
 
-        lastSignature = inputSignature(sessions: sessions, context: context)
-        return TravelTimelineRefreshSummary(tripCount: drafts.count,
-                                            updatedTripCount: updatedTripCount,
-                                            analyzedPhotoCount: analyzedPhotoCount)
+    /// 完整重建入口：手动刷新使用。不限速分析整库照片、补齐历史异地行程，保证时间轴“全”。
+    static func rebuildAll(context: ModelContext,
+                           sessions: [ActivitySession],
+                           places: [CustomPlace],
+                           stays: [StayRecord]) async -> TravelTimelineRefreshSummary {
+        let activity = await buildActivityTrips(context: context, sessions: sessions, budget: nil)
+        let meta = await rebuildFromPhotoMetadata(context: context,
+                                                  sessions: sessions,
+                                                  places: places,
+                                                  stays: stays)
+        await resolveMissingPlaceNames(in: context)
+        return TravelTimelineRefreshSummary(tripCount: activity.trips + meta.tripCount,
+                                            updatedTripCount: activity.updated + meta.updatedTripCount,
+                                            analyzedPhotoCount: activity.analyzed,
+                                            scannedPhotoCount: meta.scannedPhotoCount,
+                                            locatedPhotoCount: meta.locatedPhotoCount,
+                                            routineAnchorCount: meta.routineAnchorCount,
+                                            photoAccessLimited: meta.photoAccessLimited)
+    }
+
+    /// 增量更新：页面进入时使用。只分析新增照片（限速）与补齐最新行程，
+    /// 但每次都从全部照片的元数据重建照片行程——这一步不加载图片、不跑 Vision，
+    /// 代价极低，却是历史照片行程的唯一来源，绝不能因“库代次没变”而跳过。
+    static func refreshIncremental(context: ModelContext,
+                                   sessions: [ActivitySession],
+                                   places: [CustomPlace],
+                                   stays: [StayRecord]) async -> TravelTimelineRefreshSummary {
+        let activity = await buildActivityTrips(context: context,
+                                                sessions: sessions,
+                                                budget: incrementalPhotoBudget)
+        let meta = await rebuildFromPhotoMetadata(context: context,
+                                                  sessions: sessions,
+                                                  places: places,
+                                                  stays: stays)
+        await resolveMissingPlaceNames(in: context)
+        return TravelTimelineRefreshSummary(tripCount: activity.trips + meta.tripCount,
+                                            updatedTripCount: activity.updated + meta.updatedTripCount,
+                                            analyzedPhotoCount: activity.analyzed,
+                                            scannedPhotoCount: meta.scannedPhotoCount,
+                                            locatedPhotoCount: meta.locatedPhotoCount,
+                                            routineAnchorCount: meta.routineAnchorCount,
+                                            photoAccessLimited: meta.photoAccessLimited)
     }
 
     /// 只用已有 SwiftData 缓存修复/补齐时间线，不读取相册、不运行 Vision、也不请求地名。
@@ -90,7 +173,31 @@ enum TravelTimelineGenerationService {
             PhotoLibraryScanCache.descriptors(currentGeneration: generation)
         }.value
         let photoRecords = (try? context.fetch(FetchDescriptor<PhotoAnalysisRecord>())) ?? []
-        let anchors = TravelArchiveDetectionService.routineAnchors(places: places, stays: stays)
+        var anchors = TravelArchiveDetectionService.routineAnchors(places: places, stays: stays)
+        if anchors.isEmpty {
+            var samples = descriptors.compactMap { descriptor -> HistoricalRoutineLocationSample? in
+                guard let latitude = descriptor.originalLatitude,
+                      let longitude = descriptor.originalLongitude else { return nil }
+                return HistoricalRoutineLocationSample(
+                    coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
+                    date: descriptor.creationDate
+                )
+            }
+            // 没有照片定位时，旧 GPS 轨迹仍可建立日常活动圈。每段最多采样 40 点，
+            // 避免某一次长运动因点数过多压倒长期频率。
+            for session in sessions {
+                let points = session.trackPoints.filter(\.isUsableForAnalysis).sorted { $0.timestamp < $1.timestamp }
+                let stride = max(points.count / 40, 1)
+                samples.append(contentsOf: points.enumerated().compactMap { index, point in
+                    guard index % stride == 0 else { return nil }
+                    return HistoricalRoutineLocationSample(
+                        coordinate: CLLocationCoordinate2D(latitude: point.latitude, longitude: point.longitude),
+                        date: point.timestamp
+                    )
+                })
+            }
+            anchors = inferredRoutineAnchors(samples: samples)
+        }
         let input = TimelineGenerationInput(sessions: sessions,
                                             photos: photoRecords,
                                             descriptors: descriptors,
@@ -102,33 +209,16 @@ enum TravelTimelineGenerationService {
         PersistenceService.save(context, operation: "恢复历史旅行时间线")
         return TravelTimelineRefreshSummary(tripCount: drafts.count,
                                             updatedTripCount: updatedTripCount,
-                                            analyzedPhotoCount: 0)
-    }
-
-    private static func inputSignature(sessions: [ActivitySession],
-                                       context: ModelContext) -> String {
-        var hash = StableFNVHash()
-        hash.add("timeline-input-v1")
-        hash.add(sessions.count)
-        for session in sessions {
-            hash.add(session.id.uuidString)
-            hash.add(session.startTime.timeIntervalSince1970)
-            hash.add(session.endTime?.timeIntervalSince1970 ?? 0)
-            hash.add(session.distance)
-        }
-        let photoCount = (try? context.fetchCount(FetchDescriptor<PhotoAnalysisRecord>())) ?? 0
-        hash.add(photoCount)
-        var latestDescriptor = FetchDescriptor<PhotoAnalysisRecord>(
-            sortBy: [SortDescriptor(\PhotoAnalysisRecord.analyzedAt, order: .reverse)])
-        latestDescriptor.fetchLimit = 1
-        if let newest = try? context.fetch(latestDescriptor).first {
-            hash.add(newest.analyzedAt.timeIntervalSince1970)
-        }
-        return hash.hex
+                                            analyzedPhotoCount: 0,
+                                            scannedPhotoCount: descriptors.count,
+                                            locatedPhotoCount: descriptors.filter { $0.originalLatitude != nil && $0.originalLongitude != nil }.count,
+                                            routineAnchorCount: anchors.count,
+                                            photoAccessLimited: status == .limited)
     }
 
     private static func updatePhotoCache(context: ModelContext,
-                                         sessions: [ActivitySession]) async -> Int {
+                                         sessions: [ActivitySession],
+                                         budget: Int?) async -> Int {
         let status = await photoAuthorizationStatus()
         guard status == .authorized || status == .limited else { return 0 }
 
@@ -158,7 +248,7 @@ enum TravelTimelineGenerationService {
                 continue
             }
             guard !ProcessInfo.processInfo.isLowPowerModeEnabled else { continue }
-            guard analyzedCount < maximumPhotosPerTimelineRefresh else { break }
+            if let budget, analyzedCount >= budget { break }
 
             let result = await PhotoVisionAnalysisService.analyze(descriptor)
             let record = PhotoAnalysisRecord(assetIdentifier: descriptor.id,
@@ -198,7 +288,10 @@ enum TravelTimelineGenerationService {
     private static func reconcile(drafts: [TravelTimelineTripDraft],
                                   in context: ModelContext) -> Int {
         let existingTrips = (try? context.fetch(FetchDescriptor<TravelTimelineTrip>())) ?? []
-        var existingByKey = Dictionary(uniqueKeysWithValues: existingTrips.map { ($0.stableKey, $0) })
+        var existingByKey: [String: TravelTimelineTrip] = [:]
+        for trip in existingTrips where existingByKey[trip.stableKey] == nil {
+            existingByKey[trip.stableKey] = trip
+        }
         var updatedCount = 0
 
         for draft in drafts {
@@ -600,7 +693,10 @@ private enum TravelTimelineDraftBuilder {
         }
         let byDay = Dictionary(grouping: located) { Calendar.current.startOfDay(for: $0.date) }
         return byDay.flatMap { day, dayPhotos in
-            spatialPhotoGroups(dayPhotos).compactMap { group -> TravelTimelineTripDraft? in
+            // 同一天可能出现两个相距 15 km 以上、却落在同一 0.5° 桶的空间簇；
+            // 桶 key 相同时追加序号区分，避免 stableKey 撞唯一约束导致保存永久失败。
+            var usedKeys = Set<String>()
+            return spatialPhotoGroups(dayPhotos).compactMap { group -> TravelTimelineTripDraft? in
                 guard let first = group.min(by: { $0.date < $1.date }),
                       let last = group.max(by: { $0.date < $1.date }),
                       let coordinate = first.coordinate else { return nil }
@@ -622,7 +718,15 @@ private enum TravelTimelineDraftBuilder {
                                                     activityTypeRawValue: ActivityType.unknown.rawValue)
                 }
                 let bucket = "\(Int(coordinate.latitude * 2)):\(Int(coordinate.longitude * 2))"
-                return TravelTimelineTripDraft(stableKey: "photo:\(Int(day.timeIntervalSince1970)):\(bucket)",
+                let baseKey = "photo:\(Int(day.timeIntervalSince1970)):\(bucket)"
+                var stableKey = baseKey
+                var ordinal = 2
+                while usedKeys.contains(stableKey) {
+                    stableKey = "\(baseKey)#\(ordinal)"
+                    ordinal += 1
+                }
+                usedKeys.insert(stableKey)
+                return TravelTimelineTripDraft(stableKey: stableKey,
                                                title: "\(tripTitle(start: first.date, end: last.date)) · 照片恢复",
                                                startTime: first.date,
                                                endTime: max(last.date, first.date),
