@@ -168,7 +168,7 @@ struct InsightAssistantView: View {
                 }
             }
         } footer: {
-            Text("管家按需查阅整个 App 的文字与数值记录；照片只提供本机脱敏后的主题聚合。")
+            Text("管家可读取照片的拍摄时间、脱敏地点、轨迹关联和本机安全主题，但无法读取照片画面。")
         }
     }
 
@@ -188,7 +188,7 @@ struct InsightAssistantView: View {
         } header: {
             Text("让管家主动整理")
         } footer: {
-            Text("旅行整理先用家、学校和高频停留排除日常活动，再把旅行区间内的脱敏照片主题用于回忆。")
+            Text("旅行整理先排除家、学校等日常区域，再结合照片时间、脱敏地点和轨迹恢复旅行；照片画面不会交给 AI。")
         }
     }
 
@@ -212,7 +212,7 @@ struct InsightAssistantView: View {
         case .activity: "理解运动类型、距离、时长和变化趋势，给出可执行建议。"
         case .places: "理解常去地点和停留规律；地点坐标不会发送给模型。"
         case .schedule: "综合课程、学习停留、运动与恢复节奏。"
-        case .photos: "只理解本机照片解析后的安全主题，不读取任何图像。"
+        case .photos: "理解照片时间、脱敏地点、轨迹关联和本机安全主题，但不读取任何图像。"
         case .travel: "先排除家、学校与日常活动圈，再整理真正的旅行。"
         }
     }

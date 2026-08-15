@@ -2,7 +2,8 @@ import Foundation
 
 // MARK: - 隐私红线
 // OpenAI Chat Completions 兼容的纯文本客户端。无论选择 Agnes 或 DeepSeek，
-// 请求结构都不存在图片分支；照片只能由 PhotoAIPrivacyFilter 在本机聚合、脱敏。
+// 请求结构都不存在图片分支；照片只能由 PhotoAIPrivacyFilter 输出时间、脱敏地点、
+// 轨迹关联和安全主题等纯文字元数据。
 
 enum AIProvider: String, CaseIterable, Identifiable {
     case agnes

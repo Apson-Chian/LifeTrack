@@ -588,7 +588,7 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertEqual(trips.map(\.stableKey), ["photo:historical"])
     }
 
-    func testPhotoAIPrivacyFilterRemovesSensitiveData() {
+    func testPhotoAIPrivacyFilterSharesMetadataWithoutImageOrExactGPS() {
         let record = PhotoAnalysisRecord(
             assetIdentifier: "secret-asset-id",
             creationDate: Date(timeIntervalSince1970: 1_700_000_000),
@@ -601,8 +601,16 @@ final class ReliabilityTests: XCTestCase {
             state: .completed,
             linkedSessionID: UUID()
         )
+        let school = CustomPlace(shortName: "学校",
+                                 latitude: 31.2346,
+                                 longitude: 121.4568,
+                                 radius: 500,
+                                 category: .study)
 
-        let summary = PhotoAIPrivacyFilter.summary(records: [record], days: 30)
+        let summary = PhotoAIPrivacyFilter.summary(records: [record], days: 30, places: [school])
+        XCTAssertTrue(summary.contains("学校"))
+        XCTAssertTrue(summary.contains("年"))
+        XCTAssertTrue(summary.contains("照片记录"))
         XCTAssertTrue(summary.contains("风景"))
         XCTAssertTrue(summary.contains("mountain"))
         XCTAssertTrue(summary.contains("beach"))
@@ -615,6 +623,8 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertFalse(summary.contains("121.456789"))
         XCTAssertFalse(summary.contains("1700000000"))
         XCTAssertFalse(summary.contains("3 张脸"))
+        XCTAssertFalse(summary.contains("image_url"))
+        XCTAssertFalse(summary.contains("base64"))
     }
 
     func testAgnesWireMessageHasNoImageContentBranch() {
