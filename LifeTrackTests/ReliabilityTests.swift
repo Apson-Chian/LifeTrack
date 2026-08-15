@@ -393,6 +393,11 @@ final class ReliabilityTests: XCTestCase {
             "get_travel_candidates",
             "get_sanitized_photo_summary"
         ])
+        let photoTool = LifeAgentService.tools.first { $0.name == "get_sanitized_photo_summary" }
+        let properties = photoTool?.parameters["properties"] as? [String: Any]
+        XCTAssertNotNil(properties?["start_date"])
+        XCTAssertNotNil(properties?["end_date"])
+        XCTAssertNotNil(properties?["location_query"])
     }
 
     func testAIProvidersUseFixedOfficialTextEndpoints() {
@@ -610,7 +615,8 @@ final class ReliabilityTests: XCTestCase {
         let summary = PhotoAIPrivacyFilter.summary(records: [record], days: 30, places: [school])
         XCTAssertTrue(summary.contains("学校"))
         XCTAssertTrue(summary.contains("年"))
-        XCTAssertTrue(summary.contains("照片记录"))
+        XCTAssertTrue(summary.contains("完整逐日索引"))
+        XCTAssertTrue(summary.contains("逐张元数据"))
         XCTAssertTrue(summary.contains("风景"))
         XCTAssertTrue(summary.contains("mountain"))
         XCTAssertTrue(summary.contains("beach"))
@@ -625,6 +631,30 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertFalse(summary.contains("3 张脸"))
         XCTAssertFalse(summary.contains("image_url"))
         XCTAssertFalse(summary.contains("base64"))
+    }
+
+    func testPhotoMetadataDailyIndexIncludesOldDatesBeyondDetailLimit() {
+        let calendar = Calendar(identifier: .gregorian)
+        let march = calendar.date(from: DateComponents(year: 2026, month: 3, day: 28, hour: 10))!
+        let april = calendar.date(from: DateComponents(year: 2026, month: 4, day: 1, hour: 11))!
+        let records = [march, april].enumerated().map { index, date in
+            PhotoAnalysisRecord(assetIdentifier: "photo-\(index)",
+                                creationDate: date,
+                                categories: [.landscape],
+                                topLabels: [],
+                                confidence: 0.8,
+                                faceCount: 0,
+                                state: .completed)
+        }
+
+        let summary = PhotoAIPrivacyFilter.summary(records: records,
+                                                   days: 20,
+                                                   rangeDescription: "2026-03-20 至 2026-04-05",
+                                                   detailLimit: 1)
+
+        XCTAssertTrue(summary.contains("2026-03-28：1 张"))
+        XCTAssertTrue(summary.contains("2026-04-01：1 张"))
+        XCTAssertTrue(summary.contains("已经计入上方完整逐日索引"))
     }
 
     func testAgnesWireMessageHasNoImageContentBranch() {
