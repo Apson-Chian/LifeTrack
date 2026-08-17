@@ -32,31 +32,43 @@ struct RootView: View {
                 .tabItem { Label("设置", systemImage: "gearshape") }
                 .tag(RootTab.settings)
         }
-        .tint(.indigo)
+        .tint(InstrumentPalette.lime)
+        .toolbar(.hidden, for: .tabBar)
+        .preferredColorScheme(.dark)
         .environmentObject(assistantCenter)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if assistantCenter.isGenerating && selectedTab != .assistant {
-                Button { selectedTabRawValue = RootTab.assistant.rawValue } label: {
-                    HStack(spacing: 10) {
-                        ProgressView()
-                            .controlSize(.small)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("AI 管家正在查阅记录")
-                                .font(.subheadline.weight(.semibold))
-                            Text("可以继续使用 App，完成后回助手查看")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+            VStack(spacing: 0) {
+                if assistantCenter.isGenerating && selectedTab != .assistant {
+                    Button { selectedTabRawValue = RootTab.assistant.rawValue } label: {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                                .controlSize(.small)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("AI 管家正在查阅记录")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("可以继续使用 App，完成后回助手查看")
+                                    .font(.caption)
+                                    .foregroundStyle(InstrumentPalette.textMuted)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(InstrumentPalette.textMuted)
                         }
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .foregroundStyle(InstrumentPalette.textPrimary)
+                        .background(InstrumentPalette.surface)
+                        .overlay(alignment: .top) {
+                            Rectangle()
+                                .fill(InstrumentPalette.border)
+                                .frame(height: 1)
+                        }
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(.ultraThinMaterial)
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
+
+                instrumentTabBar
             }
         }
         .task {
@@ -84,8 +96,61 @@ struct RootView: View {
             set: { selectedTabRawValue = $0.rawValue }
         )
     }
+
+    private var instrumentTabBar: some View {
+        HStack(spacing: 0) {
+            ForEach(RootTab.allCases, id: \.self) { tab in
+                Button {
+                    selectedTabRawValue = tab.rawValue
+                } label: {
+                    VStack(spacing: 4) {
+                        Rectangle()
+                            .fill(selectedTab == tab ? InstrumentPalette.lime : .clear)
+                            .frame(height: 3)
+                        Image(systemName: tab.symbol)
+                            .font(.system(size: 18, weight: .bold))
+                        Text(tab.title)
+                            .font(.caption2.weight(.semibold))
+                    }
+                    .foregroundStyle(selectedTab == tab ? InstrumentPalette.lime : InstrumentPalette.textMuted)
+                    .frame(maxWidth: .infinity, minHeight: 58)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(tab.title)
+                .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
+            }
+        }
+        .padding(.horizontal, 4)
+        .background(InstrumentPalette.surface)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(InstrumentPalette.border)
+                .frame(height: 1)
+        }
+    }
 }
 
-private enum RootTab: String, Hashable {
+private enum RootTab: String, Hashable, CaseIterable {
     case today, history, places, assistant, settings
+
+    var title: String {
+        switch self {
+        case .today: "今日"
+        case .history: "轨迹"
+        case .places: "地点"
+        case .assistant: "助手"
+        case .settings: "设置"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .today: "location.fill"
+        case .history: "point.3.connected.trianglepath.dotted"
+        case .places: "mappin.and.ellipse"
+        case .assistant: "sparkles"
+        case .settings: "gearshape"
+        }
+    }
 }

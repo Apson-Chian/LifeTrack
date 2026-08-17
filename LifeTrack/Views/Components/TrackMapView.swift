@@ -60,10 +60,11 @@ struct TrackMapView: UIViewRepresentable {
                 map.setVisibleMapRect(fitPolyline.boundingMapRect,
                                       edgePadding: UIEdgeInsets(top: 48, left: 36, bottom: 56, right: 36),
                                       animated: false)
+                context.coordinator.hasSetInitialRegion = true
             } else if let coordinate = currentLocation?.coordinate {
                 map.setRegion(MKCoordinateRegion(center: coordinate, latitudinalMeters: 1_000, longitudinalMeters: 1_000), animated: false)
+                context.coordinator.hasSetInitialRegion = true
             }
-            context.coordinator.hasSetInitialRegion = true
         }
         applyCameraRequestIfNeeded(to: map, coordinates: displayCoordinates, coordinator: context.coordinator)
     }
@@ -280,6 +281,15 @@ struct TrackMapView: UIViewRepresentable {
             for overlay in mapView.overlays where overlay is TrackGlowOverlay {
                 mapView.renderer(for: overlay)?.setNeedsDisplay()
             }
+        }
+
+        func mapView(_ mapView: MKMapView, didUpdate userLocation: MKUserLocation) {
+            guard !hasSetInitialRegion, let coordinate = userLocation.location?.coordinate else { return }
+            mapView.setRegion(MKCoordinateRegion(center: coordinate,
+                                                 latitudinalMeters: 1_000,
+                                                 longitudinalMeters: 1_000),
+                              animated: false)
+            hasSetInitialRegion = true
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
