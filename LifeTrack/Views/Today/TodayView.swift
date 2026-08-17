@@ -7,6 +7,7 @@ import UIKit
 struct TodayView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject var locationService: LocationService
     @Query(sort: \ActivitySession.startTime, order: .reverse) private var sessions: [ActivitySession]
     @Query(sort: \CustomPlace.shortName) private var places: [CustomPlace]
@@ -43,7 +44,7 @@ struct TodayView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 20) {
+                LazyVStack(spacing: 20) {
                     dayHeader
                     recordingHero
                     summary
@@ -60,6 +61,8 @@ struct TodayView: View {
                     activityBreakdown
                 }
                 .padding(.vertical, 12)
+                .frame(maxWidth: 760)
+                .frame(maxWidth: .infinity)
             }
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("今日")
@@ -144,59 +147,54 @@ struct TodayView: View {
     }
 
     private var dayHeader: some View {
-        HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(Date.now.formatted(.dateTime.month().day().weekday(.wide)))
-                    .font(.title3.weight(.semibold))
-                Text(todaySessions.isEmpty ? "从一次轻松的移动开始" : "今天的足迹正在慢慢成形")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center) {
+                dayHeaderCopy
+                Spacer()
+                dayStatusBadge
             }
-            Spacer()
-            Text(todaySessions.isEmpty ? "尚未开始" : "\(todaySessions.count) 次记录")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color(uiColor: .tertiarySystemGroupedBackground), in: Capsule())
+
+            VStack(alignment: .leading, spacing: 10) {
+                dayHeaderCopy
+                dayStatusBadge
+            }
         }
         .padding(.horizontal)
     }
 
+    private var dayHeaderCopy: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(Date.now.formatted(.dateTime.month().day().weekday(.wide)))
+                .font(.title3.weight(.semibold))
+            Text(todaySessions.isEmpty ? "从一次轻松的移动开始" : "今天的足迹正在慢慢成形")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var dayStatusBadge: some View {
+        Text(todaySessions.isEmpty ? "尚未开始" : "\(todaySessions.count) 次记录")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color(uiColor: .tertiarySystemGroupedBackground), in: Capsule())
+    }
+
     private var recordingHero: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
-                Image(systemName: statusSymbol)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(locationService.activeSession == nil ? Color.indigo : Color.red)
-                    .frame(width: 38, height: 38)
-                    .background((locationService.activeSession == nil ? Color.indigo : Color.red).opacity(0.1), in: Circle())
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    recordingStatus
+                    Spacer(minLength: 8)
+                    activitySelector
+                }
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(statusTitle)
-                        .font(.headline)
-                    Text(locationService.activeSession == nil ? "轨迹与运动数据仅保存在这台设备" : "保持移动，LifeTrack 正在记录你的路线")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                VStack(alignment: .leading, spacing: 12) {
+                    recordingStatus
+                    activitySelector
                 }
-                Spacer(minLength: 8)
-                Button {
-                    showActivityPicker = true
-                } label: {
-                    HStack(spacing: 5) {
-                        Text(manualActivity?.displayName ?? "自动识别")
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.caption2.weight(.bold))
-                    }
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .foregroundStyle(.primary)
-                    .background(Color(uiColor: .tertiarySystemGroupedBackground), in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("选择活动类型")
             }
 
             recordingAction
@@ -230,6 +228,46 @@ struct TodayView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: locationService.activeSession != nil)
     }
 
+    private var recordingStatus: some View {
+        HStack(spacing: 12) {
+            Image(systemName: statusSymbol)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(locationService.activeSession == nil ? Color.indigo : Color.red)
+                .frame(width: 38, height: 38)
+                .background((locationService.activeSession == nil ? Color.indigo : Color.red).opacity(0.1), in: Circle())
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(statusTitle)
+                    .font(.headline)
+                Text(locationService.activeSession == nil ? "轨迹与运动数据仅保存在这台设备" : "保持移动，LifeTrack 正在记录你的路线")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var activitySelector: some View {
+        Button {
+            showActivityPicker = true
+        } label: {
+            HStack(spacing: 5) {
+                Text(manualActivity?.displayName ?? "自动识别")
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2.weight(.bold))
+            }
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .foregroundStyle(.primary)
+            .background(Color(uiColor: .tertiarySystemGroupedBackground), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("活动类型，\(manualActivity?.displayName ?? "自动识别")")
+        .accessibilityHint("双击更改本次记录的活动类型")
+    }
+
     @ViewBuilder
     private var recordingAction: some View {
         if locationService.recordingState == .stopping {
@@ -252,6 +290,7 @@ struct TodayView: View {
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.white)
             .background(.red, in: RoundedRectangle(cornerRadius: 12))
+            .accessibilityHint("再次尝试结束并保存当前记录")
         } else if locationService.activeSession == nil {
             Button { locationService.startRecording(manualActivity: manualActivity) } label: {
                 Label("开始记录", systemImage: "record.circle.fill")
@@ -262,6 +301,7 @@ struct TodayView: View {
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.white)
             .background(.indigo, in: RoundedRectangle(cornerRadius: 12))
+            .accessibilityHint("开始保存你的移动路线和运动数据")
         } else {
             Button(role: .destructive) { locationService.stopRecording() } label: {
                 Label("结束并保存", systemImage: "stop.circle.fill")
@@ -272,6 +312,7 @@ struct TodayView: View {
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.white)
             .background(.red, in: RoundedRectangle(cornerRadius: 12))
+            .accessibilityHint("结束当前记录并将轨迹保存在本机")
         }
     }
 
@@ -363,18 +404,21 @@ struct TodayView: View {
     }
 
     private var summary: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 0) {
-                SummaryMetric(title: "距离", value: Formatters.distance(totalDistance), symbol: "arrow.left.and.right", tint: .indigo)
-                SummaryMetric(title: "时长", value: Formatters.duration(activeDuration), symbol: "clock.fill", tint: .blue)
-                SummaryMetric(title: "停留", value: "\(todaySessions.flatMap(\.stayRecords).count)", symbol: "mappin.circle.fill", tint: .orange)
-                SummaryMetric(title: "照片", value: "\(todayPhotoMoments.count)", symbol: "photo.fill", tint: .pink)
-            }
+        LazyVGrid(columns: summaryColumns, spacing: 14) {
+            SummaryMetric(title: "距离", value: Formatters.distance(totalDistance), symbol: "arrow.left.and.right", tint: .indigo)
+            SummaryMetric(title: "时长", value: Formatters.duration(activeDuration), symbol: "clock.fill", tint: .blue)
+            SummaryMetric(title: "停留", value: "\(todaySessions.flatMap(\.stayRecords).count)", symbol: "mappin.circle.fill", tint: .orange)
+            SummaryMetric(title: "照片", value: "\(todayPhotoMoments.count)", symbol: "photo.fill", tint: .pink)
         }
         .padding(.vertical, 13)
         .padding(.horizontal, 8)
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .padding(.horizontal)
+    }
+
+    private var summaryColumns: [GridItem] {
+        let count = dynamicTypeSize.isAccessibilitySize ? 2 : 4
+        return Array(repeating: GridItem(.flexible(), spacing: 8), count: count)
     }
 
     @ViewBuilder
@@ -913,6 +957,8 @@ private struct SummaryMetric: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title)，\(value)")
     }
 }
 

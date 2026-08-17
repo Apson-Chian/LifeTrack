@@ -7,11 +7,11 @@ struct RootView: View {
     @State private var locationService = LocationService.shared
     @State private var didConfigureServices = false
     @State private var showOnboarding = !OnboardingState.hasSeenOnboarding
-    @State private var selectedTab: RootTab = .today
+    @SceneStorage("root.selectedTab") private var selectedTabRawValue = RootTab.today.rawValue
     @StateObject private var assistantCenter = AssistantTaskCenter()
 
     var body: some View {
-        TabView(selection: $selectedTab) {
+        TabView(selection: selectedTabBinding) {
             TodayView(locationService: locationService)
                 .tabItem { Label("今日", systemImage: "location.fill") }
                 .tag(RootTab.today)
@@ -36,7 +36,7 @@ struct RootView: View {
         .environmentObject(assistantCenter)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if assistantCenter.isGenerating && selectedTab != .assistant {
-                Button { selectedTab = .assistant } label: {
+                Button { selectedTabRawValue = RootTab.assistant.rawValue } label: {
                     HStack(spacing: 10) {
                         ProgressView()
                             .controlSize(.small)
@@ -73,8 +73,19 @@ struct RootView: View {
             OnboardingView()
         }
     }
+
+    private var selectedTab: RootTab {
+        RootTab(rawValue: selectedTabRawValue) ?? .today
+    }
+
+    private var selectedTabBinding: Binding<RootTab> {
+        Binding(
+            get: { selectedTab },
+            set: { selectedTabRawValue = $0.rawValue }
+        )
+    }
 }
 
-private enum RootTab: Hashable {
+private enum RootTab: String, Hashable {
     case today, history, places, assistant, settings
 }
