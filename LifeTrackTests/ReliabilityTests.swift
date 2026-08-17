@@ -89,12 +89,12 @@ final class ReliabilityTests: XCTestCase {
         }
     }
 
-    func testBackupRestoreIsValidatedDeduplicatedAndAtomic() throws {
+    func testBackupRestoreIsValidatedDeduplicatedAndAtomic() async throws {
         let source = try makeContainer()
         try insertSampleSession(into: source.mainContext)
         source.mainContext.insert(CustomPlace(shortName: "家", latitude: 31.2, longitude: 121.4))
         try source.mainContext.save()
-        let backupURL = try BackupService.createBackup(from: source.mainContext)
+        let backupURL = try await BackupService.createBackup(from: source.mainContext)
         defer { try? FileManager.default.removeItem(at: backupURL) }
 
         let destination = try makeContainer()
@@ -116,11 +116,11 @@ final class ReliabilityTests: XCTestCase {
         }
     }
 
-    func testBackupRejectsCorruptionWrongVersionBadCoordinatesAndLargeFile() throws {
+    func testBackupRejectsCorruptionWrongVersionBadCoordinatesAndLargeFile() async throws {
         let source = try makeContainer()
         try insertSampleSession(into: source.mainContext)
         try source.mainContext.save()
-        let validURL = try BackupService.createBackup(from: source.mainContext)
+        let validURL = try await BackupService.createBackup(from: source.mainContext)
         defer { try? FileManager.default.removeItem(at: validURL) }
         let destination = try makeContainer()
 
@@ -825,6 +825,86 @@ final class ReliabilityTests: XCTestCase {
         XCTAssertFalse(md.hasPrefix("---"))
         XCTAssertFalse(md.contains("今日量化简报"))
         XCTAssertTrue(md.contains("生活与轨迹复盘"))
+    }
+
+    func testMarkdownExportIncludesEnabledCoursesAndEscapesUserText() async throws {
+        let container = try makeContainer()
+        let calendar = Calendar.current
+        let testDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let weekday = calendar.component(.weekday, from: testDate)
+        let normalizedWeekday = weekday == 1 ? 7 : weekday - 1
+        let course = CourseEvent(weekday: normalizedWeekday,
+                                 startMinutes: 9 * 60,
+                                 endMinutes: 10 * 60,
+                                 name: "算法|设计",
+                                 locationName: "A_101",
+                                 weekParity: 1)
+        container.mainContext.insert(course)
+
+        let stay = StayRecord(detectedName: "图书\"馆|主馆\n二楼",
+                              latitude: 31.2,
+                              longitude: 121.4,
+                              arrivalTime: testDate.addingTimeInterval(60))
+        stay.departureTime = testDate.addingTimeInterval(120)
+        stay.duration = 60
+        container.mainContext.insert(stay)
+        try container.mainContext.save()
+
+        let md = await MarkdownExportService.generateDailyMarkdown(for: testDate,
+                                                                    context: container.mainContext,
+                                                                    calendar: calendar)
+
+        XCTAssertTrue(md.contains("📚 算法\\|设计"))
+        XCTAssertTrue(md.contains("A\\_101"))
+        XCTAssertTrue(md.contains("`单周`"))
+        XCTAssertTrue(md.contains("图书\\\"馆|主馆\\n二楼"))
+    }
+
+    func testMarkdownExportClampsRecordsThatCrossMidnight() async throws {
+        let container = try makeContainer()
+        let calendar = Calendar.current
+        let testDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let startOfDay = calendar.startOfDay(for: testDate)
+        let session = ActivitySession(activityType: .walking,
+                                      source: "test",
+                                      startTime: startOfDay.addingTimeInterval(-30 * 60))
+        session.endTime = startOfDay.addingTimeInterval(30 * 60)
+        session.duration = 60 * 60
+        session.distance = 1_000
+        session.isActive = false
+        container.mainContext.insert(session)
+        try container.mainContext.save()
+
+        let md = await MarkdownExportService.generateDailyMarkdown(for: testDate,
+                                                                    context: container.mainContext,
+                                                                    calendar: calendar)
+
+        XCTAssertTrue(md.contains("active_duration_min: 30"))
+        XCTAssertTrue(md.contains("total_distance_km: 0.50"))
+        XCTAssertTrue(md.contains("**00:00 - 00:30**"))
+    }
+
+    func testMarkdownExportAssociatesPhotosForSelectedHistoricalDate() async throws {
+        let container = try makeContainer()
+        let start = Date(timeIntervalSince1970: 1_650_000_000)
+        _ = insertSession(start: start,
+                          coordinates: [(31.20, 121.40), (31.201, 121.401)],
+                          into: container.mainContext)
+        let descriptor = PhotoLibraryAssetDescriptor(id: "historical-markdown-photo",
+                                                     creationDate: start.addingTimeInterval(30),
+                                                     displayLatitude: 31.201,
+                                                     displayLongitude: 121.401,
+                                                     originalLatitude: 31.201,
+                                                     originalLongitude: 121.401,
+                                                     isSelfie: false)
+        try container.mainContext.save()
+
+        let md = await MarkdownExportService.generateDailyMarkdown(for: start,
+                                                                    context: container.mainContext,
+                                                                    photoDescriptors: [descriptor])
+
+        XCTAssertTrue(md.contains("沿途照片时刻"))
+        XCTAssertTrue(md.contains(Formatters.timeString(descriptor.creationDate)))
     }
 
     func testMarkdownExportCreatesValidTemporaryFile() throws {

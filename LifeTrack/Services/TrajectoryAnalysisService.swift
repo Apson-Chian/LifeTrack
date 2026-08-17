@@ -41,6 +41,18 @@ enum TrajectoryAnalysisService {
         )
     }
 
+    /// 仅做 O(1) 的逐点有效性检查，用于录制过程中实时标记明显异常点。
+    /// 完整的位移/距离重算（O(n^2)）留给结束时一次性计算，避免热路径随点数立方增长。
+    static func quickAnomalyReason(for point: TrackPoint) -> TrackPointAnomalyReason? {
+        if !CLLocationCoordinate2DIsValid(point.coordinate) ||
+            (point.latitude == 0 && point.longitude == 0) {
+            return .invalidCoordinate
+        } else if point.horizontalAccuracy < 0 || point.horizontalAccuracy > 200 {
+            return .poorAccuracy
+        }
+        return nil
+    }
+
     static func isPlausibleLeg(from previous: CLLocation, to current: CLLocation) -> Bool {
         let interval = current.timestamp.timeIntervalSince(previous.timestamp)
         guard interval > 0, interval <= maximumDistanceGap else { return false }

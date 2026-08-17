@@ -402,7 +402,7 @@ final class LocationService: NSObject, ObservableObject {
         unsavedTrackPointCount += 1
         hasPendingPersistenceChanges = true
         if pointsSinceLastAnalysis >= 8 {
-            applyTrajectoryAnalysis(to: session, including: point)
+            applyTrajectoryAnalysis(to: session, including: point, full: false)
             pointsSinceLastAnalysis = 0
         }
         updatePlaceRecognition(for: location, session: session)
@@ -438,8 +438,20 @@ final class LocationService: NSObject, ObservableObject {
         return time >= policy.minimumInterval || distance >= policy.distanceFilter
     }
 
+    /// 录制中每累计若干点会调用一次。
+    /// `full: false` 时只做 O(1) 的逐点有效性标记，并保留 `process()` 里逐点累加的
+    /// `session.distance`，把 O(n^2) 的位移/距离重算推迟到结束时一次性完成，
+    /// 否则热路径会随点数近似立方增长，长录制会掉帧。
+    /// `full: true`（默认）用于结束、恢复、异常关闭与历史重分析，给出精确结果。
     private func applyTrajectoryAnalysis(to session: ActivitySession,
-                                         including pendingPoint: TrackPoint? = nil) {
+                                         including pendingPoint: TrackPoint? = nil,
+                                         full: Bool = true) {
+        if let pendingPoint, !full {
+            if let reason = TrajectoryAnalysisService.quickAnomalyReason(for: pendingPoint) {
+                pendingPoint.anomalyReason = reason
+            }
+            return
+        }
         var points = session.trackPoints
         if let pendingPoint, !points.contains(where: { $0.id == pendingPoint.id }) {
             points.append(pendingPoint)

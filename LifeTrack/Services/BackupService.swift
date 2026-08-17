@@ -48,7 +48,7 @@ enum BackupService {
         UserDefaults.standard.object(forKey: lastBackupDateKey) as? Date
     }
 
-    static func createBackup(from context: ModelContext) throws -> URL {
+    static func createBackup(from context: ModelContext) async throws -> URL {
         let backup = LifeTrackBackup(
             backupVersion: LifeTrackBackup.currentVersion,
             createdAt: .now,
@@ -66,10 +66,20 @@ enum BackupService {
             travelArchives: try context.fetch(FetchDescriptor<TravelArchiveRecord>()).map(TravelArchiveBackup.init)
         )
 
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        let data = try encoder.encode(backup)
+        // 编码整库备份随数据量线性增长且 CPU 密集，放到后台队列执行，避免大备份冻结 UI。
+        let data: Data = try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    let encoder = JSONEncoder()
+                    encoder.dateEncodingStrategy = .iso8601
+                    encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+                    let encoded = try encoder.encode(backup)
+                    continuation.resume(returning: encoded)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("LifeTrack-Backup-\(fileDate(.now)).lifetrackbackup.json")
         try data.write(to: url, options: .atomic)

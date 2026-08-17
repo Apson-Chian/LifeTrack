@@ -200,10 +200,12 @@ struct SettingsView: View {
     }
 
     private func createBackup() {
-        do {
-            sharedBackup = SharedFile(url: try BackupService.createBackup(from: modelContext))
-        } catch {
-            backupMessage = "创建备份失败：\(error.localizedDescription)"
+        Task {
+            do {
+                sharedBackup = SharedFile(url: try await BackupService.createBackup(from: modelContext))
+            } catch {
+                backupMessage = "创建备份失败：\(error.localizedDescription)"
+            }
         }
     }
 
