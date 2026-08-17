@@ -33,8 +33,6 @@ struct RootView: View {
                 .tag(RootTab.settings)
         }
         .tint(.indigo)
-        .toolbarBackground(.ultraThinMaterial, for: .tabBar)
-        .toolbarBackground(.visible, for: .tabBar)
         .environmentObject(assistantCenter)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if assistantCenter.isGenerating && selectedTab != .assistant {

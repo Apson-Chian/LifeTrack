@@ -46,9 +46,9 @@ struct TodayView: View {
                 VStack(spacing: 20) {
                     dayHeader
                     recordingHero
+                    summary
                     todayMap
                     quickActions
-                    summary
                     todayPhotoStory
                     secondBrainCard
                     AssistantFeatureCard(
@@ -63,6 +63,7 @@ struct TodayView: View {
             }
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("今日")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -143,40 +144,41 @@ struct TodayView: View {
     }
 
     private var dayHeader: some View {
-        HStack(alignment: .firstTextBaseline) {
+        HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(Date.now.formatted(.dateTime.month().day().weekday(.wide)))
-                    .font(.title2.weight(.bold))
+                    .font(.title3.weight(.semibold))
                 Text(todaySessions.isEmpty ? "从一次轻松的移动开始" : "今天的足迹正在慢慢成形")
-                    .font(.subheadline)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Image(systemName: todaySessions.isEmpty ? "sun.max.fill" : "figure.walk.motion")
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(.indigo)
-                .frame(width: 46, height: 46)
-                .background(.indigo.opacity(0.1), in: Circle())
-                .accessibilityHidden(true)
+            Text(todaySessions.isEmpty ? "尚未开始" : "\(todaySessions.count) 次记录")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color(uiColor: .tertiarySystemGroupedBackground), in: Capsule())
         }
         .padding(.horizontal)
     }
 
     private var recordingHero: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
                 Image(systemName: statusSymbol)
-                    .font(.title2.weight(.semibold))
-                    .symbolEffect(.pulse, options: .repeating, isActive: locationService.activeSession != nil && !reduceMotion)
-                    .frame(width: 46, height: 46)
-                    .background(.white.opacity(0.16), in: Circle())
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(locationService.activeSession == nil ? Color.indigo : Color.red)
+                    .frame(width: 38, height: 38)
+                    .background((locationService.activeSession == nil ? Color.indigo : Color.red).opacity(0.1), in: Circle())
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(statusTitle)
                         .font(.headline)
                     Text(locationService.activeSession == nil ? "轨迹与运动数据仅保存在这台设备" : "保持移动，LifeTrack 正在记录你的路线")
                         .font(.caption)
-                        .foregroundStyle(.white.opacity(0.78))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
                 Spacer(minLength: 8)
                 Button {
@@ -190,18 +192,11 @@ struct TodayView: View {
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
-                    .background(.white.opacity(0.16), in: Capsule())
+                    .foregroundStyle(.primary)
+                    .background(Color(uiColor: .tertiarySystemGroupedBackground), in: Capsule())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("选择活动类型")
-            }
-
-            HStack(spacing: 0) {
-                HeroMetric(value: Formatters.distance(totalDistance), title: "今日距离")
-                Divider().overlay(.white.opacity(0.25)).frame(height: 34)
-                HeroMetric(value: Formatters.duration(activeDuration), title: "运动时长")
-                Divider().overlay(.white.opacity(0.25)).frame(height: 34)
-                HeroMetric(value: "\(todaySessions.count)", title: "记录次数")
             }
 
             recordingAction
@@ -212,25 +207,27 @@ struct TodayView: View {
                         .font(.footnote.weight(.semibold))
                     Text("当前只有“使用 App 时”定位权限。若需要后台持续记录，请升级为“始终允许”。")
                         .font(.caption)
-                        .foregroundStyle(.white.opacity(0.8))
+                        .foregroundStyle(.secondary)
                     Button("允许后台持续记录") {
                         locationService.requestBackgroundAuthorization()
                     }
                     .font(.footnote.weight(.semibold))
                     .buttonStyle(.bordered)
-                    .tint(.white)
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+                .foregroundStyle(.orange)
+                .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
             }
         }
-        .foregroundStyle(.white)
-        .padding(18)
-        .background(recordingGradient, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .shadow(color: recordingAccent.opacity(0.22), radius: 18, y: 8)
+        .padding(16)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.05), lineWidth: 1)
+        }
         .padding(.horizontal)
-        .animation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 1), value: locationService.activeSession != nil)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: locationService.activeSession != nil)
     }
 
     @ViewBuilder
@@ -242,9 +239,9 @@ struct TodayView: View {
                     .font(.subheadline.weight(.semibold))
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 13)
-            .foregroundStyle(.indigo)
-            .background(.white, in: RoundedRectangle(cornerRadius: 15))
+            .padding(.vertical, 12)
+            .foregroundStyle(.secondary)
+            .background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
         } else if locationService.recordingState == .stopFailed {
             Button { locationService.retryStopRecording() } label: {
                 Label("重试结束保存", systemImage: "arrow.clockwise.circle.fill")
@@ -252,9 +249,9 @@ struct TodayView: View {
                     .padding(.vertical, 13)
             }
             .buttonStyle(.plain)
-            .font(.headline)
-            .foregroundStyle(.red)
-            .background(.white, in: RoundedRectangle(cornerRadius: 15))
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white)
+            .background(.red, in: RoundedRectangle(cornerRadius: 12))
         } else if locationService.activeSession == nil {
             Button { locationService.startRecording(manualActivity: manualActivity) } label: {
                 Label("开始记录", systemImage: "record.circle.fill")
@@ -262,9 +259,9 @@ struct TodayView: View {
                     .padding(.vertical, 13)
             }
             .buttonStyle(.plain)
-            .font(.headline)
-            .foregroundStyle(.indigo)
-            .background(.white, in: RoundedRectangle(cornerRadius: 15))
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white)
+            .background(.indigo, in: RoundedRectangle(cornerRadius: 12))
         } else {
             Button(role: .destructive) { locationService.stopRecording() } label: {
                 Label("结束并保存", systemImage: "stop.circle.fill")
@@ -272,21 +269,10 @@ struct TodayView: View {
                     .padding(.vertical, 13)
             }
             .buttonStyle(.plain)
-            .font(.headline)
-            .foregroundStyle(.red)
-            .background(.white, in: RoundedRectangle(cornerRadius: 15))
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white)
+            .background(.red, in: RoundedRectangle(cornerRadius: 12))
         }
-    }
-
-    private var recordingAccent: Color {
-        locationService.activeSession == nil ? .indigo : .red
-    }
-
-    private var recordingGradient: LinearGradient {
-        let colors: [Color] = locationService.activeSession == nil
-            ? [.indigo, Color(red: 0.35, green: 0.29, blue: 0.82)]
-            : [.red, Color(red: 0.9, green: 0.27, blue: 0.2)]
-        return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 
     private var todayMap: some View {
@@ -300,20 +286,20 @@ struct TodayView: View {
                          onLongPress: { coordinate in
                              placeDraft = PlaceDraft(coordinate: coordinate)
                          })
-            .frame(height: 220)
-            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .frame(height: 210)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay(alignment: .bottomLeading) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("今日轨迹")
-                        .font(.headline)
+                        .font(.subheadline.weight(.semibold))
                     Text(todayMapPoints.isEmpty ? "开始记录后，路线会出现在这里" : "已记录 \(todayMapPoints.count) 个轨迹点")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
-                .padding(10)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(Color(uiColor: .secondarySystemGroupedBackground).opacity(0.94), in: RoundedRectangle(cornerRadius: 12))
+                .padding(8)
             }
             .overlay(alignment: .topTrailing) {
                 MapControlsPanel {
@@ -329,7 +315,7 @@ struct TodayView: View {
                         markCurrentLocation()
                     }
                 }
-                .padding(10)
+                .padding(8)
             }
         }
         .padding(.horizontal)
@@ -378,17 +364,16 @@ struct TodayView: View {
 
     private var summary: some View {
         VStack(alignment: .leading, spacing: 14) {
-            SectionHeader(title: "今日概览", subtitle: "你的移动、停留与沿途时刻")
             HStack(spacing: 0) {
                 SummaryMetric(title: "距离", value: Formatters.distance(totalDistance), symbol: "arrow.left.and.right", tint: .indigo)
                 SummaryMetric(title: "时长", value: Formatters.duration(activeDuration), symbol: "clock.fill", tint: .blue)
                 SummaryMetric(title: "停留", value: "\(todaySessions.flatMap(\.stayRecords).count)", symbol: "mappin.circle.fill", tint: .orange)
                 SummaryMetric(title: "照片", value: "\(todayPhotoMoments.count)", symbol: "photo.fill", tint: .pink)
             }
-            .padding(.vertical, 2)
         }
-        .padding(16)
-        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .padding(.vertical, 13)
+        .padding(.horizontal, 8)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .padding(.horizontal)
     }
 
@@ -892,36 +877,16 @@ private struct MapControlButton: View {
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(.primary)
                 .frame(width: 44, height: 44)
-                .background(.regularMaterial, in: Circle())
+                .background(Color(uiColor: .secondarySystemBackground).opacity(0.94), in: Circle())
                 .overlay {
-                    Circle().stroke(.white.opacity(0.28), lineWidth: 1)
+                    Circle().stroke(Color.primary.opacity(0.06), lineWidth: 1)
                 }
-                .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
+                .shadow(color: .black.opacity(0.1), radius: 6, y: 2)
         }
         .buttonStyle(.plain)
         .frame(width: 52, height: 52)
         .contentShape(Rectangle())
         .accessibilityLabel(title)
-    }
-}
-
-private struct HeroMetric: View {
-    let value: String
-    let title: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value)
-                .font(.subheadline.weight(.bold))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-            Text(title)
-                .font(.caption2)
-                .foregroundStyle(.white.opacity(0.72))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
     }
 }
 
@@ -951,21 +916,6 @@ private struct SummaryMetric: View {
     }
 }
 
-private struct SectionHeader: View {
-    let title: String
-    let subtitle: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title)
-                .font(.headline)
-            Text(subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-}
-
 private struct HomeActionButtonStyle: ButtonStyle {
     let tint: Color
 
@@ -988,13 +938,13 @@ private struct MapControlsPanel<Content: View>: View {
     }
 
     var body: some View {
-        VStack(spacing: 6) {
+        HStack(spacing: 4) {
             content
         }
         .padding(4)
-        .background(.ultraThinMaterial, in: Capsule())
+        .background(Color(uiColor: .secondarySystemBackground).opacity(0.94), in: Capsule())
         .overlay {
-            Capsule().stroke(.white.opacity(0.24), lineWidth: 1)
+            Capsule().stroke(Color.primary.opacity(0.06), lineWidth: 1)
         }
         .contentShape(Rectangle())
         .allowsHitTesting(true)
