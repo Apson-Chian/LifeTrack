@@ -8,6 +8,7 @@ struct TodayView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var locationService: LocationService
     @Query(sort: \ActivitySession.startTime, order: .reverse) private var sessions: [ActivitySession]
     @Query(sort: \CustomPlace.shortName) private var places: [CustomPlace]
@@ -44,44 +45,62 @@ struct TodayView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(spacing: 20) {
-                    dayHeader
-                    recordingHero
-                    summary
-                    quickActions
-                    todayPhotoStory
-                    secondBrainCard
-                    AssistantFeatureCard(
-                        context: .today,
-                        title: "让 AI 分析今天的运动",
-                        subtitle: "结合今日轨迹、停留与过去记录回答问题"
-                    )
-                    .padding(.horizontal)
-                    activityBreakdown
-                    todayMap
+                Group {
+                    if isInstrumentDarkMode {
+                        LazyVStack(spacing: 14) {
+                            instrumentHeader
+                            instrumentRecordingAction
+                            instrumentMap
+                            instrumentMetrics
+                            instrumentTools
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.top, 10)
+                        .padding(.bottom, 28)
+                    } else {
+                        LazyVStack(spacing: 20) {
+                            dayHeader
+                            recordingHero
+                            summary
+                            quickActions
+                            todayPhotoStory
+                            secondBrainCard
+                            AssistantFeatureCard(
+                                context: .today,
+                                title: "让 AI 分析今天的运动",
+                                subtitle: "结合今日轨迹、停留与过去记录回答问题"
+                            )
+                            .padding(.horizontal)
+                            activityBreakdown
+                            todayMap
+                        }
+                        .padding(.vertical, 12)
+                    }
                 }
-                .padding(.vertical, 12)
                 .frame(maxWidth: 760)
                 .frame(maxWidth: .infinity)
             }
-            .background(Color(uiColor: .systemGroupedBackground))
-            .navigationTitle("今日")
+            .background((isInstrumentDarkMode ? InstrumentPalette.background : Color(uiColor: .systemGroupedBackground)).ignoresSafeArea())
+            .navigationTitle(isInstrumentDarkMode ? "" : "今日")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar(isInstrumentDarkMode ? .hidden : .visible, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button { showMarkdownExportSheet = true } label: {
-                            Label("导出今日 Markdown 日记", systemImage: "doc.text.badge.plus")
-                        }
-                        Button { showDestinationSearch = true } label: {
-                            Label("高德导航", systemImage: "location.north.line")
-                        }
-                        Button {
-                            markCurrentLocation()
+                if !isInstrumentDarkMode {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Menu {
+                            Button { showMarkdownExportSheet = true } label: {
+                                Label("导出今日 Markdown 日记", systemImage: "doc.text.badge.plus")
+                            }
+                            Button { showDestinationSearch = true } label: {
+                                Label("高德导航", systemImage: "location.north.line")
+                            }
+                            Button { markCurrentLocation() } label: {
+                                Label("标记当前位置", systemImage: "mappin.circle.fill")
+                            }
                         } label: {
-                            Label("标记当前位置", systemImage: "mappin.circle.fill")
+                            Image(systemName: "plus")
                         }
-                    } label: { Image(systemName: "plus") }
+                    }
                 }
             }
             .sheet(isPresented: $showMarkdownExportSheet) {
@@ -144,6 +163,242 @@ struct TodayView: View {
                 Task { await loadTodayPhotos(requestAccess: false) }
             }
         }
+    }
+
+    private var isInstrumentDarkMode: Bool { colorScheme == .dark }
+
+    private var instrumentHeader: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                HStack(spacing: 8) {
+                    Image(systemName: "line.3.horizontal.decrease")
+                        .font(.title2.weight(.black))
+                    Text("LIFETRACK")
+                        .font(.system(size: 27, weight: .black, design: .default))
+                        .fontWidth(.condensed)
+                        .italic()
+                        .tracking(1.2)
+                }
+                .foregroundStyle(InstrumentPalette.lime)
+
+                Spacer(minLength: 8)
+
+                Menu {
+                    Button { showMarkdownExportSheet = true } label: {
+                        Label("导出今日 Markdown 日记", systemImage: "doc.text.badge.plus")
+                    }
+                    Button { showDestinationSearch = true } label: {
+                        Label("高德导航", systemImage: "location.north.line")
+                    }
+                    Button { markCurrentLocation() } label: {
+                        Label("标记当前位置", systemImage: "mappin.circle.fill")
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(locationService.authorizationStatus == .denied ? "GPS 受限" : "GPS 待命")
+                                .font(.caption.weight(.heavy))
+                            Text("仅存本机")
+                                .font(.caption2)
+                                .foregroundStyle(InstrumentPalette.textMuted)
+                        }
+                        Image(systemName: "location.fill")
+                            .font(.body.weight(.bold))
+                    }
+                    .foregroundStyle(InstrumentPalette.orange)
+                    .padding(.horizontal, 12)
+                    .frame(minHeight: 48)
+                    .background(InstrumentPalette.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(InstrumentPalette.border, lineWidth: 1)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("今日工具菜单")
+            }
+
+            HStack(alignment: .lastTextBaseline) {
+                Text(Date.now.formatted(.dateTime.month().day()))
+                    .font(.system(size: 44, weight: .black, design: .monospaced))
+                    .foregroundStyle(InstrumentPalette.textPrimary)
+                    .minimumScaleFactor(0.72)
+                Text(Date.now.formatted(.dateTime.weekday(.wide)))
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(InstrumentPalette.textMuted)
+                Spacer()
+                Text(todaySessions.isEmpty ? "尚未开始" : "\(todaySessions.count) 次记录")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(InstrumentPalette.lime)
+            }
+
+            Rectangle()
+                .fill(InstrumentPalette.border)
+                .frame(height: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var instrumentRecordingAction: some View {
+        if locationService.recordingState == .stopping {
+            HStack(spacing: 12) {
+                ProgressView().tint(InstrumentPalette.background)
+                Text("正在安全结束记录…")
+            }
+            .font(.headline.weight(.black))
+            .foregroundStyle(InstrumentPalette.background)
+            .frame(maxWidth: .infinity, minHeight: 82)
+            .background(InstrumentPalette.lime, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        } else {
+            Button {
+                if locationService.recordingState == .stopFailed {
+                    locationService.retryStopRecording()
+                } else if locationService.activeSession == nil {
+                    locationService.startRecording(manualActivity: manualActivity)
+                } else {
+                    locationService.stopRecording()
+                }
+            } label: {
+                HStack(spacing: 18) {
+                    Image(systemName: instrumentActionSymbol)
+                        .font(.system(size: 27, weight: .black))
+                    Text(instrumentActionTitle)
+                        .font(.title2.weight(.black))
+                        .fontWidth(.condensed)
+                        .tracking(0.8)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.headline.weight(.black))
+                        .opacity(0.55)
+                }
+                .foregroundStyle(InstrumentPalette.background)
+                .padding(.horizontal, 22)
+                .frame(maxWidth: .infinity, minHeight: 82)
+                .background(instrumentActionColor, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(InstrumentPressStyle())
+            .accessibilityHint(locationService.activeSession == nil ? "开始保存移动路线和运动数据" : "结束当前记录并安全保存")
+        }
+    }
+
+    private var instrumentActionTitle: String {
+        if locationService.recordingState == .stopFailed { return "重试保存" }
+        return locationService.activeSession == nil ? "开始记录" : "结束并保存"
+    }
+
+    private var instrumentActionSymbol: String {
+        if locationService.recordingState == .stopFailed { return "arrow.clockwise" }
+        return locationService.activeSession == nil ? "play.fill" : "stop.fill"
+    }
+
+    private var instrumentActionColor: Color {
+        locationService.activeSession == nil ? InstrumentPalette.lime : InstrumentPalette.orange
+    }
+
+    private var instrumentMap: some View {
+        ZStack {
+            TrackMapView(points: todayMapPoints,
+                         places: places,
+                         currentLocation: locationService.currentLocation,
+                         cameraRequest: mapCameraRequest,
+                         style: .vivid,
+                         colorMode: .activity,
+                         photoMoments: todayPhotoMoments,
+                         onPhotoTap: showPhoto,
+                         onLongPress: { coordinate in
+                             placeDraft = PlaceDraft(coordinate: coordinate)
+                         })
+            .frame(height: 340)
+
+            VStack {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("今日路线")
+                            .font(.caption.weight(.black))
+                            .foregroundStyle(InstrumentPalette.lime)
+                        Text(todayMapPoints.isEmpty ? "开始后显示实时轨迹" : "\(todayMapPoints.count) 个有效点位")
+                            .font(.caption2)
+                            .foregroundStyle(InstrumentPalette.textMuted)
+                    }
+                    .padding(10)
+                    .background(InstrumentPalette.surface.opacity(0.94), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                    Spacer()
+
+                    VStack(spacing: 0) {
+                        InstrumentMapButton(symbol: "location.fill", label: "定位") { focusCurrentLocation() }
+                        Divider().overlay(InstrumentPalette.border)
+                        InstrumentMapButton(symbol: "point.3.connected.trianglepath.dotted", label: "全览") { showFullTrack() }
+                        Divider().overlay(InstrumentPalette.border)
+                        InstrumentMapButton(symbol: "mappin.and.ellipse", label: "标记") { markCurrentLocation() }
+                    }
+                    .frame(width: 46)
+                    .background(InstrumentPalette.surface.opacity(0.96), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(InstrumentPalette.border, lineWidth: 1)
+                    }
+                }
+                Spacer()
+            }
+            .padding(10)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(InstrumentPalette.border, lineWidth: 1)
+        }
+    }
+
+    private var instrumentMetrics: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 0) { instrumentMetricContent }
+            VStack(spacing: 0) { instrumentMetricContent }
+        }
+        .background(InstrumentPalette.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(InstrumentPalette.border, lineWidth: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var instrumentMetricContent: some View {
+        InstrumentMetric(title: "距离", value: instrumentDistance, symbol: "arrow.left.and.right")
+        InstrumentMetric(title: "时长", value: instrumentDuration, symbol: "stopwatch")
+        Button { showActivityPicker = true } label: {
+            InstrumentMetric(title: "当前活动",
+                             value: manualActivity?.displayName ?? (locationService.activeSession == nil ? "自动识别" : locationService.currentActivity.displayName),
+                             symbol: manualActivity?.symbolName ?? locationService.currentActivity.symbolName)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var instrumentDistance: String {
+        String(format: "%.2f 公里", totalDistance / 1_000)
+    }
+
+    private var instrumentDuration: String {
+        let seconds = max(0, Int(activeDuration))
+        let hours = seconds / 3_600
+        let minutes = (seconds % 3_600) / 60
+        let remainingSeconds = seconds % 60
+        if hours > 0 {
+            return String(format: "%02d:%02d:%02d", hours, minutes, remainingSeconds)
+        }
+        return String(format: "%02d:%02d", minutes, remainingSeconds)
+    }
+
+    private var instrumentTools: some View {
+        HStack(spacing: 10) {
+            Button { markCurrentLocation() } label: {
+                InstrumentToolLabel(title: "标记地点", subtitle: "记录当前位置", symbol: "mappin.and.ellipse")
+            }
+            Button { showTodayTrackDetail = true } label: {
+                InstrumentToolLabel(title: "今日记录", subtitle: "轨迹与停留点", symbol: "list.bullet.rectangle")
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     private var dayHeader: some View {
@@ -653,6 +908,115 @@ struct TodayView: View {
         }.value
         photoDescriptors = descriptors.filter { Calendar.current.isDateInToday($0.creationDate) }
         isLoadingPhotos = false
+    }
+}
+
+enum InstrumentPalette {
+    static let background = Color(red: 0.025, green: 0.045, blue: 0.050)
+    static let surface = Color(red: 0.050, green: 0.075, blue: 0.080)
+    static let surfaceRaised = Color(red: 0.075, green: 0.100, blue: 0.105)
+    static let lime = Color(red: 0.70, green: 0.96, blue: 0.04)
+    static let orange = Color(red: 1.00, green: 0.48, blue: 0.08)
+    static let textPrimary = Color(red: 0.93, green: 0.94, blue: 0.92)
+    static let textMuted = Color(red: 0.56, green: 0.59, blue: 0.58)
+    static let border = Color.white.opacity(0.17)
+}
+
+private struct InstrumentPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .brightness(configuration.isPressed ? -0.08 : 0)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+private struct InstrumentMapButton: View {
+    let symbol: String
+    let label: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.body.weight(.bold))
+                .foregroundStyle(InstrumentPalette.lime)
+                .frame(width: 46, height: 46)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+}
+
+private struct InstrumentMetric: View {
+    let title: String
+    let value: String
+    let symbol: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.caption.weight(.bold))
+                Spacer(minLength: 4)
+                Image(systemName: symbol)
+                    .font(.caption.weight(.bold))
+            }
+            .foregroundStyle(InstrumentPalette.lime)
+
+            Text(value)
+                .font(.system(.title3, design: .monospaced, weight: .black))
+                .foregroundStyle(InstrumentPalette.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.62)
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(InstrumentPalette.border)
+                .frame(width: 1)
+                .padding(.vertical, 14)
+        }
+        .contentShape(Rectangle())
+    }
+}
+
+private struct InstrumentToolLabel: View {
+    let title: String
+    let subtitle: String
+    let symbol: String
+
+    var body: some View {
+        HStack(spacing: 11) {
+            Image(systemName: symbol)
+                .font(.body.weight(.bold))
+                .foregroundStyle(InstrumentPalette.lime)
+                .frame(width: 42, height: 42)
+                .background(InstrumentPalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(InstrumentPalette.textPrimary)
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(InstrumentPalette.textMuted)
+            }
+            Spacer(minLength: 4)
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.black))
+                .foregroundStyle(InstrumentPalette.textMuted)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 68)
+        .background(InstrumentPalette.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(InstrumentPalette.border, lineWidth: 1)
+        }
     }
 }
 

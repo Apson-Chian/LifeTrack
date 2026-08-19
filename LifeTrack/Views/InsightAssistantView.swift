@@ -1,5 +1,7 @@
 import SwiftData
 import SwiftUI
+import PhotosUI
+import UIKit
 
 /// 贯穿 LifeTrack 的生活管家：连续对话由 RootView 级任务中心管理，离开页面也不会中断。
 struct InsightAssistantView: View {
@@ -13,6 +15,10 @@ struct InsightAssistantView: View {
     @State private var question = ""
     @State private var configurationNeeded = false
     @State private var showMarkdownExport = false
+    @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var selectedImage: UIImage?
+    @State private var selectedImageData: Data?
+    @State private var imageLoadMessage: String?
     @FocusState private var questionFocused: Bool
 
     private let kinds: [InsightKind] = [.dailyReflection, .weeklyReview, .learningLifeBalance, .travelStory]
@@ -66,7 +72,7 @@ struct InsightAssistantView: View {
         .alert("需要配置 AI", isPresented: $configurationNeeded) {
             Button("好", role: .cancel) { }
         } message: {
-            Text("请先在“设置 → AI 管家”中启用并配置 Agnes、DeepSeek 或 GLM。")
+            Text("请先在“设置 → AI 管家”中启用并配置 Agnes、DeepSeek、GLM 或 Dots。")
         }
     }
 
@@ -95,7 +101,7 @@ struct InsightAssistantView: View {
             }
             .padding(.vertical, 4)
 
-            Label(AISettings.sharesPhotoLocation ? "可按授权理解照片地点，不读取原图" : "了解记录，不窥探照片地点与原图",
+            Label(AISettings.usesExpandedLifeContext ? "已授权完整生活上下文" : "使用基础生活摘要",
                   systemImage: "checkmark.shield.fill")
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(.green)
@@ -138,17 +144,60 @@ struct InsightAssistantView: View {
 
     private var composerSection: some View {
         Section {
+            if let selectedImage {
+                HStack(spacing: 12) {
+                    Image(uiImage: selectedImage)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 72, height: 72)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("已选择一张图片")
+                            .font(.subheadline.weight(.semibold))
+                        Text("发送后由 Dots 识别，本轮完成后不保留图片数据。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(role: .destructive) { clearSelectedImage() } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .accessibilityLabel("移除所选图片")
+                }
+            }
+
             TextField("问问你的运动、学习、地点或旅行…", text: $question, axis: .vertical)
                 .lineLimit(2...5)
                 .focused($questionFocused)
                 .disabled(assistantCenter.isGenerating)
 
-            Button { askQuestion() } label: {
-                Label("发送", systemImage: "arrow.up.circle.fill")
-                    .frame(maxWidth: .infinity)
+            HStack(spacing: 10) {
+                PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                    Label("选图", systemImage: "photo")
+                }
+                .buttonStyle(.bordered)
+                .disabled(!canAttachImages || assistantCenter.isGenerating)
+                .onChange(of: selectedPhotoItem) { _, item in
+                    Task { await loadSelectedImage(item) }
+                }
+
+                Button { askQuestion() } label: {
+                    Label("发送", systemImage: "arrow.up.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(assistantCenter.isGenerating || (question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && selectedImageData == nil))
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(assistantCenter.isGenerating || question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+            if let imageLoadMessage {
+                Text(imageLoadMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            } else if !canAttachImages {
+                Text("识图需要选择 Dots 渠道，并在设置中开启“允许发送主动选择的图片”。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
@@ -173,9 +222,7 @@ struct InsightAssistantView: View {
                 }
             }
         } footer: {
-            Text(AISettings.sharesPhotoLocation
-                 ? "已允许管家使用照片时间、精确坐标和地点做附近检索；原图和人物信息不会发送。"
-                 : "照片地点当前未授权给 AI；管家仍无法读取照片画面。可在“设置 → AI 管家”中单独开启。")
+            Text("AI 可按设置读取生活记录与照片地点；只有你在这里主动选择的图片会发送给 Dots 识别。")
         }
     }
 
@@ -207,7 +254,7 @@ struct InsightAssistantView: View {
         } header: {
             Text("让管家主动整理")
         } footer: {
-            Text("旅行整理先排除家、学校等日常区域，再结合照片时间、已授权地点和轨迹恢复旅行；照片画面不会交给 AI。")
+            Text("旅行整理先排除家、学校等日常区域，再结合照片时间、已授权地点和轨迹恢复旅行。")
         }
     }
 
@@ -231,7 +278,7 @@ struct InsightAssistantView: View {
         case .activity: "理解运动类型、距离、时长和变化趋势，给出可执行建议。"
         case .places: AISettings.sharesPhotoLocation ? "理解常去地点、精确照片坐标和附近关系。" : "理解常去地点和停留规律；照片地点未授权给模型。"
         case .schedule: "综合课程、学习停留、运动与恢复节奏。"
-        case .photos: AISettings.sharesPhotoLocation ? "理解照片时间、精确地点、轨迹关联和本机安全主题，但不读取任何图像。" : "理解照片时间、轨迹关联和本机安全主题；照片地点未授权。"
+        case .photos: canAttachImages ? "理解照片时间、地点、轨迹关联，也能识别你主动选择的图片。" : "理解照片时间、轨迹关联和本机分类；切换到 Dots 后可识图。"
         case .travel: "先排除家、学校与日常活动圈，再整理真正的旅行。"
         }
     }
@@ -239,12 +286,59 @@ struct InsightAssistantView: View {
     private func askQuestion() {
         guard AISettings.isConfigured else { configurationNeeded = true; return }
         let submitted = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        let attachment = selectedImageData.map { AssistantImageAttachment(data: $0, mimeType: "image/jpeg") }
         if assistantCenter.ask(question: submitted,
                                featureContext: featureContext,
+                               image: attachment,
                                modelContext: modelContext) {
             question = ""
             questionFocused = false
+            clearSelectedImage()
         }
+    }
+
+    private var canAttachImages: Bool {
+        AISettings.selectedProvider.supportsVision && AISettings.allowsSelectedImageUpload
+    }
+
+    private func loadSelectedImage(_ item: PhotosPickerItem?) async {
+        imageLoadMessage = nil
+        guard canAttachImages, let item else { clearSelectedImage(); return }
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self),
+                  let image = UIImage(data: data),
+                  let prepared = prepareForVision(image) else {
+                imageLoadMessage = "无法读取这张图片，请换一张重试。"
+                clearSelectedImage(keepsMessage: true)
+                return
+            }
+            selectedImage = image
+            selectedImageData = prepared
+        } catch {
+            imageLoadMessage = "图片读取失败：\(error.localizedDescription)"
+            clearSelectedImage(keepsMessage: true)
+        }
+    }
+
+    private func prepareForVision(_ image: UIImage) -> Data? {
+        let maximumDimension: CGFloat = 1_600
+        let longest = max(image.size.width, image.size.height)
+        let scale = longest > maximumDimension ? maximumDimension / longest : 1
+        let size = CGSize(width: max(1, image.size.width * scale),
+                          height: max(1, image.size.height * scale))
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let rendered = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
+        return rendered.jpegData(compressionQuality: 0.78)
+    }
+
+    private func clearSelectedImage(keepsMessage: Bool = false) {
+        selectedPhotoItem = nil
+        selectedImage = nil
+        selectedImageData = nil
+        if !keepsMessage { imageLoadMessage = nil }
     }
 
     private func delete(_ offsets: IndexSet) {
@@ -401,7 +495,7 @@ private struct InsightKindDetailView: View {
         .alert("需要配置 AI", isPresented: $configurationNeeded) {
             Button("好", role: .cancel) { }
         } message: {
-            Text("请先在“设置 → AI 管家”中启用并配置 Agnes、DeepSeek 或 GLM。")
+            Text("请先在“设置 → AI 管家”中启用并配置 Agnes、DeepSeek、GLM 或 Dots。")
         }
     }
 

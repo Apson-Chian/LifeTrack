@@ -1,14 +1,14 @@
 import Foundation
 
-// MARK: - 隐私红线
-// OpenAI Chat Completions 兼容的纯文本客户端。无论选择 Agnes、DeepSeek 或 GLM，
-// 请求结构都不存在图片分支；照片只能由 PhotoAIPrivacyFilter 输出时间、用户授权的地点/坐标、
-// 轨迹关联和安全主题等纯文字元数据。
+// MARK: - AI 渠道
+// OpenAI Chat Completions 兼容客户端。默认仍只发送文字；当用户在设置中允许、
+// 且在对话中主动选择图片时，支持视觉的渠道才会收到压缩后的单张图片。
 
 enum AIProvider: String, CaseIterable, Identifiable {
     case agnes
     case deepSeek = "deepseek"
     case glm
+    case dots
 
     var id: String { rawValue }
     var displayName: String {
@@ -16,6 +16,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
         case .agnes: "Agnes"
         case .deepSeek: "DeepSeek"
         case .glm: "GLM"
+        case .dots: "Dots"
         }
     }
     var baseURL: String {
@@ -23,6 +24,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
         case .agnes: "https://apihub.agnes-ai.com/v1"
         case .deepSeek: "https://api.deepseek.com"
         case .glm: "https://open.bigmodel.cn/api/paas/v4"
+        case .dots: "https://note3-prev-api.askdiandian.com/v1"
         }
     }
     var defaultModel: String {
@@ -30,6 +32,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
         case .agnes: "agnes-2.5-flash"
         case .deepSeek: "deepseek-v4-flash"
         case .glm: "glm-4.5-flash"
+        case .dots: "dots3-note-prev"
         }
     }
     var availableModels: [String] {
@@ -37,6 +40,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
         case .agnes: ["agnes-2.5-flash", "agnes-2.0-flash"]
         case .deepSeek: ["deepseek-v4-flash", "deepseek-v4-pro"]
         case .glm: ["glm-4.5-flash", "glm-4.5-air", "glm-4.5"]
+        case .dots: ["dots3-note-prev"]
         }
     }
     var website: URL {
@@ -44,6 +48,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
         case .agnes: URL(string: "https://agnes-ai.com")!
         case .deepSeek: URL(string: "https://platform.deepseek.com")!
         case .glm: URL(string: "https://open.bigmodel.cn")!
+        case .dots: URL(string: "https://dots.ai")!
         }
     }
     var interfaceHost: String {
@@ -51,8 +56,11 @@ enum AIProvider: String, CaseIterable, Identifiable {
         case .agnes: "apihub.agnes-ai.com"
         case .deepSeek: "api.deepseek.com"
         case .glm: "open.bigmodel.cn"
+        case .dots: "note3-prev-api.askdiandian.com"
         }
     }
+
+    var supportsVision: Bool { self == .dots }
 }
 
 struct AIProviderConfiguration: Sendable {
@@ -66,6 +74,8 @@ enum AISettings {
     private static let enabledKey = "ai.enabled"
     private static let providerKey = "ai.provider"
     private static let sharesPhotoLocationKey = "ai.sharesPhotoLocation"
+    private static let allowsSelectedImageUploadKey = "ai.allowsSelectedImageUpload"
+    private static let usesExpandedLifeContextKey = "ai.usesExpandedLifeContext"
 
     static var isEnabled: Bool {
         if UserDefaults.standard.object(forKey: enabledKey) == nil {
@@ -84,13 +94,32 @@ enum AISettings {
         UserDefaults.standard.set(provider.rawValue, forKey: providerKey)
     }
 
-    /// Separate, explicit consent: enabling the assistant never implicitly shares photo places.
+    /// Defaults to broader context for new installs; the user can disable it at any time.
     static var sharesPhotoLocation: Bool {
-        UserDefaults.standard.bool(forKey: sharesPhotoLocationKey)
+        if UserDefaults.standard.object(forKey: sharesPhotoLocationKey) == nil { return true }
+        return UserDefaults.standard.bool(forKey: sharesPhotoLocationKey)
     }
 
     static func setSharesPhotoLocation(_ allowed: Bool) {
         UserDefaults.standard.set(allowed, forKey: sharesPhotoLocationKey)
+    }
+
+    static var allowsSelectedImageUpload: Bool {
+        if UserDefaults.standard.object(forKey: allowsSelectedImageUploadKey) == nil { return true }
+        return UserDefaults.standard.bool(forKey: allowsSelectedImageUploadKey)
+    }
+
+    static func setAllowsSelectedImageUpload(_ allowed: Bool) {
+        UserDefaults.standard.set(allowed, forKey: allowsSelectedImageUploadKey)
+    }
+
+    static var usesExpandedLifeContext: Bool {
+        if UserDefaults.standard.object(forKey: usesExpandedLifeContextKey) == nil { return true }
+        return UserDefaults.standard.bool(forKey: usesExpandedLifeContextKey)
+    }
+
+    static func setUsesExpandedLifeContext(_ allowed: Bool) {
+        UserDefaults.standard.set(allowed, forKey: usesExpandedLifeContextKey)
     }
 
     static func model(for provider: AIProvider) -> String {
@@ -137,22 +166,33 @@ enum AISettings {
 
 enum AgnesRole: String { case system, user, assistant, tool }
 
-/// content 永远是字符串，没有 image/image_url 分支。
 struct AgnesWireMessage {
     var role: String
     var content: String?
+    var imageDataURL: String?
     var toolCalls: [AgnesWireToolCall]?
     var toolCallId: String?
 
-    init(role: String, content: String? = nil, toolCalls: [AgnesWireToolCall]? = nil, toolCallId: String? = nil) {
+    init(role: String,
+         content: String? = nil,
+         imageDataURL: String? = nil,
+         toolCalls: [AgnesWireToolCall]? = nil,
+         toolCallId: String? = nil) {
         self.role = role
         self.content = content
+        self.imageDataURL = imageDataURL
         self.toolCalls = toolCalls
         self.toolCallId = toolCallId
     }
 
     static func text(_ content: String, role: AgnesRole) -> AgnesWireMessage {
         AgnesWireMessage(role: role.rawValue, content: content)
+    }
+
+    static func image(_ data: Data, mimeType: String, prompt: String) -> AgnesWireMessage {
+        AgnesWireMessage(role: AgnesRole.user.rawValue,
+                         content: prompt,
+                         imageDataURL: "data:\(mimeType);base64,\(data.base64EncodedString())")
     }
 }
 
@@ -201,6 +241,7 @@ enum AgnesError: LocalizedError {
     case http(provider: String, status: Int, detail: String)
     case unexpectedToolCall
     case timedOut
+    case visionUnsupported
 
     var errorDescription: String? {
         switch self {
@@ -211,11 +252,12 @@ enum AgnesError: LocalizedError {
             "\(provider) 请求失败（HTTP \(status)）：\(detail.prefix(200))"
         case .unexpectedToolCall: "模型在未提供工具时返回了工具调用。"
         case .timedOut: "AI 请求超时，已自动停止。请重试，或缩小查询范围。"
+        case .visionUnsupported: "当前渠道不支持图片理解，请切换到 Dots，或移除所选图片。"
         }
     }
 }
 
-/// 保留原类型名以兼容现有代码；实际支持 Agnes、DeepSeek 与 GLM。
+/// 保留原类型名以兼容现有代码；实际支持 Agnes、DeepSeek、GLM 与 Dots。
 struct AgnesClient {
     static let shared = AgnesClient()
     private let session: URLSession
@@ -261,7 +303,13 @@ struct AgnesClient {
         var request = URLRequest(url: url, timeoutInterval: max(1, requestTimeout))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
+        if configuration.provider == .dots {
+            request.setValue(configuration.apiKey, forHTTPHeaderField: "api-key")
+            body["stream"] = false
+            body["max_tokens"] = 4096
+        } else {
+            request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let data: Data
@@ -311,7 +359,16 @@ struct AgnesClient {
 
 extension AgnesWireMessage {
     var dictionary: [String: Any] {
-        var result: [String: Any] = ["role": role, "content": content ?? NSNull()]
+        let wireContent: Any
+        if let imageDataURL {
+            wireContent = [
+                ["type": "text", "text": content ?? "请描述这张图片。"],
+                ["type": "image_url", "image_url": ["url": imageDataURL, "detail": "medium"]]
+            ]
+        } else {
+            wireContent = content ?? NSNull()
+        }
+        var result: [String: Any] = ["role": role, "content": wireContent]
         if let toolCalls {
             result["tool_calls"] = toolCalls.map { call -> [String: Any] in
                 ["id": call.id,

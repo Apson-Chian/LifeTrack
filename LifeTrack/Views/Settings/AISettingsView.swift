@@ -11,6 +11,8 @@ struct AISettingsView: View {
     @State private var testFailed = false
     @State private var showTestAlert = false
     @State private var sharesPhotoLocation = AISettings.sharesPhotoLocation
+    @State private var allowsSelectedImageUpload = AISettings.allowsSelectedImageUpload
+    @State private var usesExpandedLifeContext = AISettings.usesExpandedLifeContext
 
     var body: some View {
         Form {
@@ -23,7 +25,6 @@ struct AISettingsView: View {
                         Text(provider.displayName).tag(provider)
                     }
                 }
-                .pickerStyle(.segmented)
                 .onChange(of: provider) { _, value in
                     AISettings.setSelectedProvider(value)
                     loadProviderValues()
@@ -57,7 +58,22 @@ struct AISettingsView: View {
             Section("它能做什么") {
                 Label("结合运动、轨迹、停留、地点和课表连续对话", systemImage: "bubble.left.and.bubble.right")
                 Label("根据家、学校与高频活动圈整理旅行", systemImage: "suitcase.rolling")
+                Label("使用 Dots 理解你主动选择的图片", systemImage: "photo.badge.magnifyingglass")
                 Label("离开助手页面后继续生成回答", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+            }
+
+            Section {
+                Toggle("允许读取完整生活记录", isOn: $usesExpandedLifeContext)
+                    .onChange(of: usesExpandedLifeContext) { _, allowed in
+                        AISettings.setUsesExpandedLifeContext(allowed)
+                    }
+                Text("开启后，AI 可在需要时读取最长约十年的运动、停留、地点备注、出行、课表、学习、旅行和照片分类摘要，并进行跨领域分析。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("生活上下文")
+            } footer: {
+                Text("记录仍由本机工具按问题提供，不会在启用时一次性自动上传。")
             }
 
             Section {
@@ -65,9 +81,13 @@ struct AISettingsView: View {
                     .onChange(of: sharesPhotoLocation) { _, allowed in
                         AISettings.setSharesPhotoLocation(allowed)
                     }
+                Toggle("允许发送主动选择的图片", isOn: $allowsSelectedImageUpload)
+                    .onChange(of: allowsSelectedImageUpload) { _, allowed in
+                        AISettings.setAllowsSelectedImageUpload(allowed)
+                    }
                 Label("开启后可理解地点名称并检索附近照片", systemImage: "map.fill")
                     .font(.footnote)
-                Text("例如询问“长荡湖附近的照片”时，LifeTrack 会用 Apple 地图解析地点，并在本机完成距离筛选；授权后会把地点名称、精确坐标、约距离和照片文字摘要交给 AI，原图仍不会上传。")
+                Text("照片库不会被自动批量上传。使用 Dots 时，你可以在对话中主动选一张图片发送给模型识别；位置与本机照片分类则按上面的权限提供。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Label("可以知道", systemImage: "checkmark.shield")
@@ -77,15 +97,15 @@ struct AISettingsView: View {
                      : "本机聚合后的非人物类别、通用主题，以及某段已识别旅行包含多少张照片；照片地点不会提供给 AI。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                Label("永远看不到", systemImage: "eye.slash")
+                Label("不会自动看到", systemImage: "eye.slash")
                     .font(.headline)
-                Text("原图、缩略图、人物与自拍、资产标识符和文件路径。")
+                Text("未选择的照片画面、资产标识符和文件路径。关闭图片发送权限后，任何照片画面都不会发给云端模型。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } header: {
                 Text("照片地点与隐私")
             } footer: {
-                Text("此授权可随时关闭。关闭后，地图解析和照片地点信息都不会提供给 AI。")
+                Text("所有授权可随时关闭；图片发送只发生在你点选图片并发送该轮消息时。")
             }
 
             Section("当前连接") {
@@ -113,6 +133,8 @@ struct AISettingsView: View {
             return "DeepSeek 使用官方 API，可能产生费用；默认使用 deepseek-v4-flash。API Key 只保存在本机 Keychain。"
         case .glm:
             return "GLM 使用智谱开放平台的官方兼容 API；默认使用 glm-4.5-flash。API Key 只保存在本机 Keychain。"
+        case .dots:
+            return "Dots 使用官方多模态兼容 API；dots3-note-prev 支持图片和工具调用。API Key 只保存在本机 Keychain。"
         }
     }
 

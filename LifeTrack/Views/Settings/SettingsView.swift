@@ -98,7 +98,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Section("照片隐私") {
-                    Text("照片内容分类默认使用低负载后台队列在设备本地完成；云端 AI 处理文字和已授权的位置数据，不接收照片缩略图或原图。")
+                    Text("照片内容分类默认在设备本地完成；只有在 AI 对话中主动选择并发送的单张图片，才会交给支持视觉的 Dots 渠道。")
                         .font(.footnote)
                 }
                 Section("AI 助手") {
@@ -107,7 +107,7 @@ struct SettingsView: View {
                     } label: {
                         Label("AI 管家", systemImage: "sparkles")
                     }
-                    Text("可切换 Agnes、DeepSeek 或 GLM，支持连续问答与旅行整理。AI 不会收到照片图像、人物信息或资产标识；单独授权照片地点后可收到精确坐标。")
+                    Text("可切换 Agnes、DeepSeek、GLM 或 Dots。可授权完整生活上下文、照片地点，并用 Dots 识别主动选择的图片。")
                         .font(.footnote)
                 }
                 Section("关于与帮助") {
