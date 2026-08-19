@@ -50,9 +50,9 @@ struct TodayView: View {
                         LazyVStack(spacing: 14) {
                             instrumentHeader
                             instrumentRecordingAction
-                            instrumentMap
                             instrumentMetrics
                             instrumentTools
+                            instrumentMap
                         }
                         .padding(.horizontal, 14)
                         .padding(.top, 10)
